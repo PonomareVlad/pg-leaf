@@ -11,14 +11,23 @@ test("split and join roundtrip through the CLI is lossless", async () => {
     const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
     try {
         expect(await run("split", fixture, `${dir}/output`)).toBe(0);
-        expect((await readdir(`${dir}/output`)).sort()).toEqual(["data", "footer.sql", "header.sql", "manifest.json"]);
-        expect((await readdir(`${dir}/output/data`)).sort()).toEqual(["orders.sql", "products.sql", "users.sql"]);
-
-        const {tables} = await Bun.file(`${dir}/output/manifest.json`).json();
-        expect(tables).toEqual(["orders.sql", "products.sql", "users.sql"]);
+        expect((await readdir(`${dir}/output`)).sort()).toEqual(["1.sql", "2", "3.sql"]);
+        expect((await readdir(`${dir}/output/2`)).sort()).toEqual(["public"]);
+        expect((await readdir(`${dir}/output/2/public`)).sort()).toEqual(["orders.sql", "products.sql", "users.sql"]);
 
         expect(await run("join", `${dir}/output`, `${dir}/restored.sql`)).toBe(0);
         expect(await Bun.file(`${dir}/restored.sql`).text()).toBe(await Bun.file(fixture).text());
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});
+
+test("split clears a stale output directory", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    try {
+        await Bun.write(`${dir}/output/2/public/stale.sql`, "stale");
+        expect(await run("split", fixture, `${dir}/output`)).toBe(0);
+        expect((await readdir(`${dir}/output/2/public`)).sort()).toEqual(["orders.sql", "products.sql", "users.sql"]);
     } finally {
         await rm(dir, {recursive: true, force: true});
     }

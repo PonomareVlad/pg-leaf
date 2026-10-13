@@ -9,5 +9,8 @@
   "scripts": {
     "test": "bun test"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "sql-formatter": "^15.9.0"
+  }
 }

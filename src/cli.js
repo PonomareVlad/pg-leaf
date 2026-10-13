@@ -2,7 +2,8 @@
 // pg-leaf — reversible splitting of PostgreSQL dumps into Git-friendly files
 
 import {appendFile, mkdir, readdir, rm} from "node:fs/promises";
-import {columns, lines, split, statements, uniques, values} from "./sql.js";
+import {format} from "sql-formatter";
+import {columns, lines, split, statements, unformat, uniques, values} from "./sql.js";
 
 const usage = `Usage:
   pg-leaf split <dump.sql> <output-dir>
@@ -27,15 +28,16 @@ const writeTable = async (dir, lines, cols, key) => {
     for (const {kind, text} of statements(lines)) {
         switch (kind) {
             case "insert": {
-                const hash = sha256(identity(text, cols, key));
+                // hash the single-line canonical form so formatted and raw chunks name identically
+                const hash = sha256(identity(unformat(text), cols, key));
                 let file = `${hash}.sql`;
                 for (let n = 2; used.has(file); n++) file = `${hash}.${n}.sql`;
                 used.add(file);
-                await Bun.write(`${dir}/${file}`, text);
+                await Bun.write(`${dir}/${file}`, format(text, {language: "postgresql"}) + "\n");
                 break;
             }
             default:
-                await appendFile(`${dir}/_.sql`, text);
+                await appendFile(`${dir}/0.sql`, text);
         }
     }
 };
@@ -52,10 +54,14 @@ const splitCommand = async (input, output) => {
 
 const walk = async dir => {
     const parts = [];
-    // "en" collation puts `_.sql` before hash-named chunks so each table starts with its comment block
-    for (const entry of (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name.localeCompare(b.name, "en")))
+    // `0.sql` sorts before hash-named chunks so each table starts with its comment block
+    for (const entry of (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name < b.name ? -1 : 1))
         if (entry.isDirectory()) parts.push(...await walk(`${dir}/${entry.name}`));
-        else parts.push(await Bun.file(`${dir}/${entry.name}`).text());
+        else {
+            const text = await Bun.file(`${dir}/${entry.name}`).text();
+            // reverse the split-time formatting of INSERT chunks back to single-line statements
+            parts.push(text.startsWith("INSERT ") ? unformat(text) + "\n" : text);
+        }
     return parts;
 };
 

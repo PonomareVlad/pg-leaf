@@ -1,5 +1,5 @@
 import {expect, test} from "bun:test";
-import {columns, join, lines, split, statements, uniques, values} from "../src/sql.js";
+import {columns, join, lines, split, statements, unformat, uniques, values} from "../src/sql.js";
 
 const dump = await Bun.file(new URL("../fixtures/dump.sql", import.meta.url)).text();
 
@@ -34,7 +34,8 @@ test("statements yields complete INSERTs and passes other lines through", () => 
     expect(inserts).toEqual([
         "INSERT INTO public.logs VALUES ('ping');\n",
         "INSERT INTO public.logs VALUES ('ping');\n",
-        "INSERT INTO public.logs VALUES ('pong');\n"
+        "INSERT INTO public.logs VALUES ('pong');\n",
+        "INSERT INTO public.logs VALUES ('first line;\nsecond line');\n"
     ]);
     expect(parsed.map(({text}) => text).join("")).toBe(logs.lines.join(""));
 });
@@ -45,6 +46,20 @@ test("statements keeps multi-line INSERTs intact", () => {
         {kind: "insert", text: "INSERT INTO public.notes VALUES ('line one\nline two');\n"},
         {kind: "other", text: "\n"}
     ]);
+});
+
+test("statements ignores `;` at line end inside a string literal", () => {
+    const lines = ["INSERT INTO public.notes VALUES ('ends with;\n", "continues');\n"];
+    expect([...statements(lines)]).toEqual([
+        {kind: "insert", text: "INSERT INTO public.notes VALUES ('ends with;\ncontinues');\n"}
+    ]);
+});
+
+test("unformat collapses formatting whitespace but preserves string literals", () => {
+    expect(unformat("INSERT INTO\n  public.users\nVALUES\n  (1, 'Alice', NULL);\n"))
+        .toBe("INSERT INTO public.users VALUES (1, 'Alice', NULL);");
+    expect(unformat("INSERT INTO\n  public.t\nVALUES\n  (\n    1,\n    'a\nb;  c',\n    2\n  );"))
+        .toBe("INSERT INTO public.t VALUES (1, 'a\nb;  c', 2);");
 });
 
 test("columns extracts column order from CREATE TABLE statements", () => {

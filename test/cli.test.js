@@ -9,7 +9,7 @@ const run = (...args) => Bun.spawn(["bun", cli, ...args]).exited;
 
 const sorted = sql => sql.split("\n").sort();
 
-test("split writes one hash-named chunk per INSERT plus _.sql for the rest", async () => {
+test("split writes one hash-named chunk per INSERT plus 0.sql for the rest", async () => {
     const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
     try {
         expect(await run("split", fixture, `${dir}/output`)).toBe(0);
@@ -17,9 +17,26 @@ test("split writes one hash-named chunk per INSERT plus _.sql for the rest", asy
         expect((await readdir(`${dir}/output/2/public`)).sort()).toEqual(["logs", "orders", "products", "users"]);
 
         const logs = (await readdir(`${dir}/output/2/public/logs`)).sort();
-        expect(logs).toContain("_.sql");
-        expect(logs.filter(file => /^[0-9a-f]{64}\.sql$/.test(file))).toHaveLength(2);
+        expect(logs).toContain("0.sql");
+        expect(logs.filter(file => /^[0-9a-f]{64}\.sql$/.test(file))).toHaveLength(3);
         expect(logs.filter(file => /^[0-9a-f]{64}\.2\.sql$/.test(file))).toHaveLength(1);
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});
+
+test("INSERT chunks are formatted on split and restored to single-line statements on join", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    try {
+        await run("split", fixture, `${dir}/output`);
+        const files = await readdir(`${dir}/output/2/public/users`);
+        const [chunk] = files.filter(file => file !== "0.sql");
+        expect(await Bun.file(`${dir}/output/2/public/users/${chunk}`).text()).toStartWith("INSERT INTO\n");
+
+        await run("join", `${dir}/output`, `${dir}/restored.sql`);
+        const restored = await Bun.file(`${dir}/restored.sql`).text();
+        expect(restored).toContain("INSERT INTO public.users VALUES (1, 'Alice', 'alice@example.com');\n");
+        expect(restored).toContain("INSERT INTO public.logs VALUES ('first line;\nsecond line');\n");
     } finally {
         await rm(dir, {recursive: true, force: true});
     }

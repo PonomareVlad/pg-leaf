@@ -35,15 +35,16 @@ export const split = sql => {
 
 export const join = chunks => chunks.map(({lines}) => lines.join("")).join("");
 
-// statement-level pass over a table data chunk:
-// yields complete INSERT statements (possibly multi-line) and passes other lines through as-is
+// statement-level pass over a table data chunk: yields complete INSERT statements and
+// passes other lines through as-is; quote parity ignores `;` inside multi-line string literals
 export function* statements(lines) {
-    let insert = [];
+    let insert = [], open = false;
     for (const line of lines) {
         switch (true) {
             case insert.length > 0 || line.startsWith("INSERT "):
                 insert.push(line);
-                if (line.trimEnd().endsWith(";")) {
+                open = (open + (line.match(/'/g)?.length ?? 0)) % 2 > 0;
+                if (!open && line.trimEnd().endsWith(";")) {
                     yield {kind: "insert", text: insert.join("")};
                     insert = [];
                 }
@@ -54,6 +55,23 @@ export function* statements(lines) {
     }
     if (insert.length) yield {kind: "insert", text: insert.join("")};
 }
+
+// collapse formatting whitespace outside string literals back into a single-line statement
+export const unformat = sql => {
+    let result = "", quoted = false, space = false;
+    for (const char of sql) {
+        switch (true) {
+            case !quoted && /\s/.test(char):
+                space = true;
+                break;
+            default:
+                if (space && result && !result.endsWith("(") && char !== ")") result += " ";
+                [space, quoted] = [false, char === "'" ? !quoted : quoted];
+                result += char;
+        }
+    }
+    return result;
+};
 
 const unquote = ident => ident.replaceAll('"', "");
 

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 45qDU2RgUdzP1Gao11evd3lZSuJsuFxexnmCKYiPYKglYE16NextnjlZ72wdPFt
+\restrict uBLijA18Q0jBIc4jYI4lC6MP1zb4EtD6vWxecKdA2Xmy5f5gM7KZHnVucPJo6T9
 
 -- Dumped from database version 16.15 (Debian 16.15-1.pgdg13+2)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-1.pgdg24.04+2)
@@ -167,6 +167,8 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 INSERT INTO public.logs VALUES ('ping');
 INSERT INTO public.logs VALUES ('ping');
 INSERT INTO public.logs VALUES ('pong');
+INSERT INTO public.logs VALUES ('first line;
+second line');
 
 
 --
@@ -269,5 +271,5 @@ ALTER TABLE ONLY public.orders
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 45qDU2RgUdzP1Gao11evd3lZSuJsuFxexnmCKYiPYKglYE16NextnjlZ72wdPFt
+\unrestrict uBLijA18Q0jBIc4jYI4lC6MP1zb4EtD6vWxecKdA2Xmy5f5gM7KZHnVucPJo6T9
 

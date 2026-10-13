@@ -1682,3 +1682,20 @@ GitHub либо другой Git remote отвечает за удалённое
 - GitHub repository limits: https://docs.github.com/en/repositories/creating-and-managing-repositories/repository-limits
 - SQL Formatter: https://github.com/sql-formatter-org/sql-formatter
 - Bun: https://bun.com/docs
+
+---
+
+## Текущий прототип
+
+Начальная версия предоставляет команды `split`, `join` и `dump`:
+
+```bash
+bun src/cli.js split dump.sql --output ./snapshot
+bun src/cli.js join ./snapshot --output restored.sql
+bun src/cli.js join ./snapshot --stdout | psql -X -v ON_ERROR_STOP=1 -d target_database
+bun src/cli.js dump --database "$DATABASE_URL" --output ./snapshot
+```
+
+Для `dump` вызывается `pg_dump` с plain SQL, `--column-inserts`, `--rows-per-insert=1`, UTF-8 и quoted identifiers. Таблицы с обнаруженным первичным ключом или пригодным полным уникальным ключом получают SHA-256 пути; для остальных используется порядковая нумерация. Создание дерева выполняется во временной директории с заменой предыдущего снимка только после успешного завершения преобразования.
+
+Прототип пока поддерживает только `INSERT ... VALUES` с одной строкой и `INSERT ... DEFAULT VALUES`. Команды `COPY` и другие SQL-фрагменты сохраняются непрозрачно. Полноценная поддержка всего диалекта и всех объектов PostgreSQL, потоковая обработка больших дампов, а также интеграционные тесты с PostgreSQL остаются следующими этапами разработки; неизвестная форма `INSERT` приводит к ошибке, а не к пропуску строки.

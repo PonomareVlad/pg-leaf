@@ -8,31 +8,54 @@
  */
 import { parseArgs } from "node:util";
 import { $ } from "bun";
-import { splitDump } from "./sql.js";
+import { collect, splitFiles, statements } from "./sql.js";
 
-/** Делит дамп и записывает дерево снимка, заменяя прежний снимок только после успешного разбора. */
-export async function split(sql, output) {
-  const files = splitDump(sql);
-  await $`rm -rf ${output}`.quiet();
-  for (const [path, contents] of files) await Bun.write(`${output}/${path}`, contents);
+/**
+ * Потоково делит файл дампа на дерево снимка: два прохода по файлу,
+ * память ограничена одним оператором. Дерево пишется во временную
+ * директорию, прежний снимок заменяется только после успеха.
+ */
+export async function split(input, output) {
+  const tables = new Map();
+  for await (const { tokens } of statements(Bun.file(input).stream())) collect(tokens, tables);
+
+  const temporary = `${output}.tmp`;
+  const exists = (path) => Bun.file(`${temporary}/${path}`).exists();
+  await $`rm -rf ${temporary}`.quiet();
+  try {
+    for await (const [path, contents] of splitFiles(statements(Bun.file(input).stream()), tables, exists)) {
+      await Bun.write(`${temporary}/${path}`, contents);
+    }
+    await $`rm -rf ${output}`.quiet();
+    await $`mv ${temporary} ${output}`.quiet();
+  } finally {
+    await $`rm -rf ${temporary}`.quiet();
+  }
 }
 
-/** Склеивает все .sql файлы снимка в детерминированном порядке путей в единый SQL. */
-export async function join(snapshot) {
+/** Потоково отдаёт .sql файлы снимка в детерминированном порядке путей, разделяя пустой строкой. */
+export async function* join(snapshot) {
   const paths = [...new Bun.Glob("**/*.sql").scanSync(snapshot)].sort();
-  const files = await Promise.all(paths.map((path) => Bun.file(`${snapshot}/${path}`).text()));
-  return files.join("\n");
+  for (const [index, path] of paths.entries()) {
+    if (index) yield "\n";
+    yield await Bun.file(`${snapshot}/${path}`).text();
+  }
 }
 
-/** Возвращает plain-дамп базы: по одному INSERT на запись, идентификаторы в кавычках, UTF-8. */
-export async function dump(database) {
+/** Снимает plain-дамп базы во временный файл (нужны два прохода) и делит его. */
+export async function dump(database, output) {
   const pgDump = Bun.spawn(
     ["pg_dump", "--format=plain", "--column-inserts", "--rows-per-insert=1", "--quote-all-identifiers", "--encoding=UTF8", `--dbname=${database}`],
     { stderr: "inherit" },
   );
-  const sql = await new Response(pgDump.stdout).text();
-  if (await pgDump.exited) throw new Error("pg_dump failed");
-  return sql;
+  const temporary = `${output}.dump.sql`;
+  try {
+    await Bun.write(temporary, new Response(pgDump.stdout));
+    if (await pgDump.exited) throw new Error("pg_dump failed");
+    await split(temporary, output);
+  } finally {
+    await $`rm -f ${temporary}`.quiet();
+  }
 }
 
 if (import.meta.main) {
@@ -43,13 +66,16 @@ if (import.meta.main) {
   });
   switch (command) {
     case "split":
-      await split(await Bun.file(input).text(), options.output);
+      await split(input, options.output);
       break;
-    case "join":
-      await Bun.write(options.stdout ? Bun.stdout : options.output, await join(input));
+    case "join": {
+      const writer = (options.stdout ? Bun.stdout : Bun.file(options.output)).writer();
+      for await (const part of join(input)) writer.write(part);
+      await writer.end();
       break;
+    }
     case "dump":
-      await split(await dump(options.database), options.output);
+      await dump(options.database, options.output);
       break;
     default:
       throw new Error("Usage: pg-leaf split <dump.sql> --output <dir> | join <dir> --output <file> | --stdout | dump --database <url> --output <dir>");

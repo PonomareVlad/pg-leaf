@@ -1,9 +1,11 @@
 /**
- * Ядро pg-leaf: лексер plain-дампа pg_dump, сбор уникальных ключей таблиц
- * и разделение дампа на детерминированное дерево SQL-файлов.
+ * Ядро pg-leaf: потоковый лексер plain-дампа pg_dump, сбор уникальных
+ * ключей таблиц и разделение дампа на детерминированное дерево SQL-файлов.
  *
- * Снимок каноничен: повторный split результата join даёт байт-в-байт
- * то же дерево, поэтому дамп и снимок зеркалируют друг друга.
+ * Дамп обрабатывается в два прохода потоком операторов: память ограничена
+ * размером одного оператора, а не всего дампа. Комментарии сохраняются
+ * без потерь: в pre-/post-data они остаются рядом со своими операторами,
+ * в data-сегменте выделяются в отдельные чанки по пути парсинга.
  */
 
 // --- Лексер ---------------------------------------------------------------
@@ -38,13 +40,18 @@ function classify(text) {
 /** Снимает кавычки с идентификатора: `"a""b"` → `a"b`. */
 const unquote = (text) => text.slice(1, -1).replaceAll('""', '"');
 
-/** Сдвигает лексер за конец блочного комментария с учётом вложенности. */
+/** Сдвигает лексер за конец блочного комментария с учётом вложенности; false — конец в следующем чанке. */
 function skipNested(sql, lexer, comment) {
   const bounds = /\/\*|\*\//g;
   bounds.lastIndex = lexer.lastIndex;
   let depth = comment.split("/*").length - comment.split("*/").length;
-  while (depth) depth += bounds.exec(sql)[0] === "/*" ? 1 : -1;
+  while (depth) {
+    const match = bounds.exec(sql);
+    if (!match) return false;
+    depth += match[0] === "/*" ? 1 : -1;
+  }
   lexer.lastIndex = bounds.lastIndex;
+  return true;
 }
 
 const upper = (token) => token?.value?.toUpperCase();
@@ -53,40 +60,88 @@ const isName = (token) => token?.type === "word" || token?.type === "identifier"
 /** PostgreSQL сворачивает не взятые в кавычки идентификаторы к нижнему регистру. */
 const fold = (token) => (token.type === "word" ? token.value.toLowerCase() : token.value);
 
+// --- Потоковое чтение операторов -------------------------------------------
+
 /**
- * Делит дамп на операторы по `;` верхнего уровня.
- * Возвращает массив { text, tokens }: text — исходный срез вместе с
- * предшествующими комментариями, tokens — токены самого оператора
- * (start и end — абсолютные смещения в дампе).
+ * Делит поток текста на операторы по `;` верхнего уровня.
+ * Источник — любой (async-)итератор строк или байтов; буфер держит не больше
+ * одного оператора. Каждый оператор отдаётся как { text, tokens }:
+ * text — исходный срез вместе с предшествующими комментариями (trivia),
+ * tokens — токены оператора со смещениями относительно начала text.
  * Блок данных `COPY ... FROM stdin;` читается целиком до строки `\.`.
+ *
+ * @param {AsyncIterable<string|Uint8Array>|Iterable<string|Uint8Array>} source
  */
-export function parse(sql) {
-  const lexer = new RegExp(TOKEN.source, "y");
-  const statements = [];
+export async function* statements(source) {
+  const decoder = new TextDecoder();
+  let buffer = ""; // необработанный хвост, начинается с начала текущего оператора
+  let cursor = 0; // позиция лексера в буфере
   let tokens = [];
-  let start = 0;
+  let copy = false; // внутри блока данных COPY, ждём терминатор `\.`
 
-  while (lexer.lastIndex < sql.length) {
-    const from = lexer.lastIndex;
-    const text = lexer.exec(sql)[0];
-    if (text.startsWith("/*")) skipNested(sql, lexer, text);
-    const type = classify(text);
-    if (!type) continue;
-    tokens.push({ type, value: type === "identifier" ? unquote(text) : text, start: from, end: lexer.lastIndex });
-    if (text !== ";") continue;
-
-    if (upper(tokens[0]) === "COPY" && tokens.some((token) => upper(token) === "STDIN")) {
-      const terminator = sql.indexOf("\n\\.\n", lexer.lastIndex - 1);
-      if (terminator === -1) throw new Error("Unterminated COPY FROM stdin block");
-      lexer.lastIndex = terminator + 4;
+  /** Разбирает буфер до места, где оператор или токен может продолжиться в следующем чанке. */
+  function* drain(final) {
+    const lexer = new RegExp(TOKEN.source, "y");
+    while (true) {
+      if (copy) {
+        const terminator = buffer.indexOf("\n\\.\n", Math.max(cursor - 1, 0));
+        if (terminator === -1) {
+          if (final) throw new Error("Unterminated COPY FROM stdin block");
+          cursor = Math.max(cursor, buffer.length - 3);
+          return;
+        }
+        copy = false;
+        cursor = terminator + 4;
+      } else {
+        if (cursor >= buffer.length) return;
+        lexer.lastIndex = cursor;
+        const text = lexer.exec(buffer)[0];
+        if (!final) {
+          // конструкция могла быть разрезана границей чанка — ждём продолжения
+          if (lexer.lastIndex === buffer.length) return;
+          if (text === "'" || text === '"' || text === "$") {
+            const prefix = tokens.at(-1); // E перед обрезанной E-строкой
+            if (text === "'" && prefix?.end === cursor && /^[eE]$/.test(prefix.value)) {
+              cursor = tokens.pop().start;
+            }
+            return;
+          }
+          if (text === "/" && buffer[lexer.lastIndex] === "*") return;
+        }
+        if (text.startsWith("/*") && !skipNested(buffer, lexer, text)) {
+          if (!final) return;
+          throw new Error("Unterminated block comment");
+        }
+        const type = classify(text);
+        if (type) tokens.push({ type, value: type === "identifier" ? unquote(text) : text, start: cursor, end: lexer.lastIndex });
+        cursor = lexer.lastIndex;
+        if (text !== ";") continue;
+        if (upper(tokens[0]) === "COPY" && tokens.some((token) => upper(token) === "STDIN")) {
+          copy = true;
+          continue;
+        }
+      }
+      yield { text: buffer.slice(0, cursor), tokens };
+      buffer = buffer.slice(cursor);
+      cursor = 0;
+      tokens = [];
     }
-    statements.push({ text: sql.slice(start, lexer.lastIndex), tokens });
-    tokens = [];
-    start = lexer.lastIndex;
   }
 
-  if (sql.slice(start).trim()) statements.push({ text: sql.slice(start), tokens });
-  return statements;
+  for await (const chunk of source) {
+    buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+    yield* drain(false);
+  }
+  buffer += decoder.decode();
+  yield* drain(true);
+  if (buffer.trim()) yield { text: buffer, tokens }; // хвост без `;` — обычно финальные комментарии
+}
+
+/** Нефайловый вариант: весь дамп одной строкой, результат — массив операторов. */
+export async function parse(sql) {
+  const result = [];
+  for await (const statement of statements([sql])) result.push(statement);
+  return result;
 }
 
 // --- Разбор структур в токенах --------------------------------------------
@@ -206,20 +261,16 @@ function collectUniqueIndex(tokens, words, tables) {
 }
 
 /**
- * Первый проход: уникальные ключи всех таблиц.
+ * Первый проход: пополняет карту уникальных ключей таблиц по одному оператору.
  * Нужен до раскладки записей, поскольку PRIMARY KEY обычно
  * объявляется в post-data — после самих данных таблицы.
  */
-function collectKeys(statements) {
-  const tables = new Map();
-  for (const { tokens } of statements) {
-    const words = tokens.map(upper);
-    const head = words.slice(0, 3).join(" ");
-    if (/^CREATE (UNLOGGED )?TABLE/.test(head)) collectCreateTable(tokens, words, tables);
-    else if (/^ALTER TABLE/.test(head)) collectAlterTable(tokens, words, tables);
-    else if (head === "CREATE UNIQUE INDEX") collectUniqueIndex(tokens, words, tables);
-  }
-  return tables;
+export function collect(tokens, tables) {
+  const words = tokens.map(upper);
+  const head = words.slice(0, 3).join(" ");
+  if (/^CREATE (UNLOGGED )?TABLE/.test(head)) collectCreateTable(tokens, words, tables);
+  else if (/^ALTER TABLE/.test(head)) collectAlterTable(tokens, words, tables);
+  else if (head === "CREATE UNIQUE INDEX") collectUniqueIndex(tokens, words, tables);
 }
 
 /**
@@ -299,73 +350,100 @@ function component(name) {
   return `${name.toLowerCase().replace(/[^a-z0-9_]+/g, "_")}-${keyHash([name]).slice(0, 8)}`;
 }
 
-/** Путь файла записи: хеш-ключи раскладываются по префиксным директориям. */
+/** Путь файла записи: идентификаторы раскладываются по префиксным директориям. */
 function rowPath({ schema, table }, id) {
-  const rows = `10-data/schemas/${component(schema)}/${component(table)}/rows`;
-  if (typeof id === "number") return `${rows}/${String(id).padStart(12, "0")}.sql`;
-  return `${rows}/${id.slice(0, 2)}/${id}.sql`;
+  return `data/${component(schema)}/${component(table)}/${id.slice(0, 2)}/${id}.sql`;
+}
+
+/**
+ * Путь и содержимое файла записи. Записи с уникальным ключом идентифицируются
+ * хешем ключа, дубликат — ошибка. Остальные — хешем содержимого; идентичные
+ * дубликаты получают числовой суффикс, свободный номер находится перебором.
+ */
+async function placeRow(row, tables, exists) {
+  const contents = formatInsert(row);
+  const key = selectKey(tables.get(row.name.key));
+  if (key?.every((column) => row.columns.includes(column))) {
+    const path = rowPath(row.name, keyHash(key.map((column) => row.values[row.columns.indexOf(column)])));
+    if (await exists(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
+    return [path, contents];
+  }
+  const hash = new Bun.CryptoHasher("sha256").update(contents).digest("hex");
+  for (let duplicate = 1; ; duplicate++) {
+    const path = rowPath(row.name, duplicate === 1 ? hash : `${hash}-${duplicate}`);
+    if (!(await exists(path))) return [path, contents];
+  }
 }
 
 // --- Разделение дампа ---------------------------------------------------------
 
-/** Фаза восстановления оператора, если он её переключает, иначе null. */
+/** Фаза восстановления, которую открывает оператор, либо null. */
 function phaseOf(words) {
   const postData = ["INDEX", "UNIQUE", "TRIGGER", "RULE", "POLICY"];
   const constraint = ["CONSTRAINT", "FOREIGN", "VALIDATE"];
-  if (words[0] === "CREATE" && postData.includes(words[1])) return "post";
-  if (words[0] === "ALTER" && words[1] === "TABLE" && constraint.some((word) => words.includes(word))) return "post";
-  if (words[0] === "COPY" || (words[0] === "SELECT" && words.includes("SETVAL"))) return "data";
+  if (words[0] === "CREATE" && postData.includes(words[1])) return "end";
+  if (words[0] === "ALTER" && words[1] === "TABLE" && constraint.some((word) => words.includes(word))) return "end";
+  if (words[0] === "INSERT" || words[0] === "COPY") return "data";
+  if (words[0] === "SELECT" && words.includes("SETVAL")) return "data";
   return null;
 }
 
-/** Кладёт запись в отдельный файл по хешу ключа, либо по порядковому номеру. */
-function placeRow(files, row, tables, ordinals) {
-  const key = selectKey(tables.get(row.name.key));
-  let id;
-  if (key && key.every((column) => row.columns.includes(column))) {
-    id = keyHash(key.map((column) => row.values[row.columns.indexOf(column)]));
-  } else {
-    id = (ordinals.get(row.name.key) ?? 0) + 1;
-    ordinals.set(row.name.key, id);
-  }
-  const path = rowPath(row.name, id);
-  if (files.has(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
-  files.set(path, formatInsert(row));
-}
-
 /**
- * Делит plain-дамп на дерево файлов снимка.
+ * Второй проход: раскладывает поток операторов по файлам снимка.
  *
- * Каждый INSERT попадает в отдельный файл по хешу уникального ключа или
- * порядковому номеру, остальные операторы — по фазам восстановления:
- * 00-pre.sql → записи таблиц → 10-data/90-other.sql → 20-post.sql
- * (порядок задаётся лексикографической сортировкой путей при join).
+ * Дерево: begin.sql (pre-data) → data/ (записи и чанки) → end.sql (post-data);
+ * порядок задаётся лексикографической сортировкой путей при join.
+ * Каждый INSERT попадает в отдельный файл, его trivia (комментарии pg_dump)
+ * и прочие data-операторы — в чанки с глобальным сквозным номером,
+ * размещаемые на уровне директории последней записи.
  *
- * @param {string} sql plain-дамп pg_dump (по одному INSERT на запись)
- * @returns {Map<string, string>} относительный путь → содержимое файла
+ * @param {AsyncIterable<{text: string, tokens: object[]}>|Iterable} source поток операторов
+ * @param {Map} tables уникальные ключи таблиц, собранные первым проходом
+ * @param {(path: string) => Promise<boolean>} exists занят ли путь (для дубликатов)
+ * @yields {[string, string]} относительный путь → содержимое файла
  */
-export function splitDump(sql) {
-  const statements = parse(sql);
-  const tables = collectKeys(statements);
+export async function* splitFiles(source, tables, exists = async () => false) {
+  const begin = [];
+  const end = [];
+  let phase = "begin";
+  let level = "data";
+  let counter = 0;
+  const chunk = () => `${level}/${String(++counter).padStart(6, "0")}.sql`;
 
-  const files = new Map();
-  const phases = { pre: [], data: [], post: [] };
-  const ordinals = new Map();
-  let phase = "pre";
-
-  for (const { text, tokens } of statements) {
+  for await (const { text, tokens } of source) {
     const words = tokens.map(upper);
+    const next = phaseOf(words);
+    if (next && phase === "begin" && begin.length) {
+      yield ["begin.sql", `${begin.join("\n\n")}\n`];
+      begin.length = 0;
+    }
+    if (next) phase = next;
+
     if (words[0] === "INSERT") {
-      phase = "data";
-      placeRow(files, parseInsert(sql, tokens), tables, ordinals);
-    } else {
-      phase = phaseOf(words) ?? phase;
-      if (text.trim()) phases[phase].push(text.trim());
+      const trivia = text.slice(0, tokens[0].start).trim();
+      if (trivia) yield [chunk(), `${trivia}\n`];
+      const row = parseInsert(text, tokens);
+      yield await placeRow(row, tables, exists);
+      level = `data/${component(row.name.schema)}/${component(row.name.table)}`;
+    } else if (phase === "data") {
+      if (text.trim()) yield [chunk(), `${text.trim()}\n`];
+    } else if (text.trim()) {
+      (phase === "begin" ? begin : end).push(text.trim());
     }
   }
 
-  if (phases.pre.length) files.set("00-pre.sql", `${phases.pre.join("\n\n")}\n`);
-  if (phases.data.length) files.set("10-data/90-other.sql", `${phases.data.join("\n\n")}\n`);
-  if (phases.post.length) files.set("20-post.sql", `${phases.post.join("\n\n")}\n`);
+  if (begin.length) yield ["begin.sql", `${begin.join("\n\n")}\n`];
+  if (end.length) yield ["end.sql", `${end.join("\n\n")}\n`];
+}
+
+/** Делит дамп-строку на Map путь → содержимое (для тестов и мелких дампов). */
+export async function splitDump(sql) {
+  const parsed = await parse(sql);
+  const tables = new Map();
+  for (const { tokens } of parsed) collect(tokens, tables);
+  const files = new Map();
+  for await (const [path, contents] of splitFiles(parsed, tables, async (path) => files.has(path))) {
+    files.set(path, contents);
+  }
   return files;
 }

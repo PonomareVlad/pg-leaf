@@ -17,6 +17,10 @@ CREATE TABLE "public"."cities" (
     "name" "text" NOT NULL
 );
 
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
 CREATE TABLE "public"."users" (
     "id" integer NOT NULL,
     "username" "text" NOT NULL,
@@ -45,7 +49,27 @@ CREATE SEQUENCE "public"."cities_id_seq"
 
 ALTER SEQUENCE "public"."cities_id_seq" OWNED BY "public"."cities"."id";
 
+--
+-- Data for Name: cities; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+--
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+--
+-- Name: cities_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
 SELECT pg_catalog.setval('"public"."cities_id_seq"', 2, true);
+
+--
+-- Data for Name: logs; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+--
+-- Data for Name: registrations; Type: TABLE DATA; Schema: public; Owner: -
+--
 
 INSERT INTO "public"."cities" (
   "id",
@@ -149,6 +173,10 @@ ALTER TABLE ONLY "public"."users"
 
 ALTER TABLE ONLY "public"."registrations"
     ADD CONSTRAINT "registrations_user_event_key" UNIQUE ("user_id", "event");
+
+--
+-- Name: users_city_id_idx; Type: INDEX; Schema: public; Owner: -
+--
 
 CREATE INDEX "users_city_id_idx" ON "public"."users" USING "btree" ("city_id");
 

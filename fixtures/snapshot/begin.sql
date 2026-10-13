@@ -17,6 +17,10 @@ CREATE TABLE "public"."cities" (
     "name" "text" NOT NULL
 );
 
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
 CREATE TABLE "public"."users" (
     "id" integer NOT NULL,
     "username" "text" NOT NULL,

@@ -15,27 +15,35 @@ const tree = async (root) => {
   return Promise.all(paths.map(async (path) => [path, await Bun.file(`${root}/${path}`).text()]));
 };
 
+const joined = async (snapshot) => {
+  let text = "";
+  for await (const part of join(snapshot)) text += part;
+  return text;
+};
+
 describe("fixtures mirror each other", () => {
   test("split of fixtures/dump.sql reproduces fixtures/snapshot byte for byte", async () => {
-    await split(await Bun.file(`${fixtures}/dump.sql`).text(), `${temporary}/snapshot`);
+    await split(`${fixtures}/dump.sql`, `${temporary}/snapshot`);
     expect(await tree(`${temporary}/snapshot`)).toEqual(await tree(`${fixtures}/snapshot`));
   });
 
   test("join of fixtures/snapshot reproduces fixtures/dump.sql byte for byte", async () => {
-    expect(await join(`${fixtures}/snapshot`)).toBe(await Bun.file(`${fixtures}/dump.sql`).text());
+    expect(await joined(`${fixtures}/snapshot`)).toBe(await Bun.file(`${fixtures}/dump.sql`).text());
   });
 
   test("split and join form a fixed point", async () => {
-    const restored = await join(`${fixtures}/snapshot`);
-    await split(restored, `${temporary}/roundtrip`);
+    await Bun.write(`${temporary}/restored.sql`, await joined(`${fixtures}/snapshot`));
+    await split(`${temporary}/restored.sql`, `${temporary}/roundtrip`);
     expect(await tree(`${temporary}/roundtrip`)).toEqual(await tree(`${fixtures}/snapshot`));
   });
 });
 
 describe("split", () => {
-  test("keeps the previous snapshot when the dump cannot be parsed", async () => {
-    await split("CREATE TABLE public.items (id integer PRIMARY KEY);", `${temporary}/kept`);
-    await expect(split("INSERT INTO t (id) VALUES (1), (2);", `${temporary}/kept`)).rejects.toThrow();
-    expect(await Bun.file(`${temporary}/kept/00-pre.sql`).text()).toContain("CREATE TABLE");
+  test("keeps the previous snapshot when the dump cannot be split", async () => {
+    await Bun.write(`${temporary}/ok.sql`, "CREATE TABLE public.items (id integer PRIMARY KEY);\nINSERT INTO public.items (id) VALUES (1);\n");
+    await Bun.write(`${temporary}/bad.sql`, "INSERT INTO t (id) VALUES (1), (2);\n");
+    await split(`${temporary}/ok.sql`, `${temporary}/kept`);
+    await expect(split(`${temporary}/bad.sql`, `${temporary}/kept`)).rejects.toThrow();
+    expect(await Bun.file(`${temporary}/kept/begin.sql`).text()).toContain("CREATE TABLE");
   });
 });

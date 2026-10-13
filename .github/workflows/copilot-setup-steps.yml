@@ -28,15 +28,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    env:
-      PGHOST: localhost
-      PGPORT: 5432
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: postgres
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      - name: Export PostgreSQL environment variables
+        run: |
+          {
+            echo "PGHOST=localhost"
+            echo "PGPORT=5432"
+            echo "PGUSER=postgres"
+            echo "PGPASSWORD=postgres"
+            echo "PGDATABASE=postgres"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2

@@ -102,6 +102,26 @@ describe("splitDump", () => {
     expect([...files.values()].join("")).not.toContain("--");
   });
 
+  test("keeps explicit transactions, including INSERTs, in one ordered chunk", async () => {
+    const transaction =
+      "BEGIN;\n" +
+      "SELECT pg_catalog.lo_open('16385', 131072);\n" +
+      "INSERT INTO public.logs (message) VALUES ('inside transaction');\n" +
+      "SELECT pg_catalog.lo_close(0);\n" +
+      "COMMIT;";
+    const files = await splitDump(transaction);
+    const entries = [...files.entries()];
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0][0]).toMatch(/^data\/sql\/[0-9a-f]{64}\.sql$/);
+    expect(entries[0][1]).toBe(`${transaction}\n`);
+  });
+
+  test("rejects COMMIT without BEGIN and BEGIN without COMMIT", async () => {
+    await expect(splitDump("COMMIT;")).rejects.toThrow("COMMIT without BEGIN");
+    await expect(splitDump("BEGIN; SELECT 1;")).rejects.toThrow("BEGIN without COMMIT");
+  });
+
   test("keeps comments inline in pre- and post-data", async () => {
     const files = await splitDump("-- header\nCREATE TABLE public.t (id integer);\nINSERT INTO public.t (id) VALUES (1);\n-- footer\nCREATE INDEX i ON public.t (id);\n");
     expect(files.get("begin.sql")).toContain("-- header");

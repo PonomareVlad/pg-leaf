@@ -46,4 +46,17 @@ describe("split", () => {
     await expect(split(`${temporary}/bad.sql`, `${temporary}/kept`)).rejects.toThrow();
     expect(await Bun.file(`${temporary}/kept/begin.sql`).text()).toContain("CREATE TABLE");
   });
+
+  test("join preserves the statement order inside a transaction chunk", async () => {
+    const dump =
+      "BEGIN;\n" +
+      "SELECT pg_catalog.lo_open('16385', 131072);\n" +
+      "SELECT pg_catalog.lowrite(0, '\\x00');\n" +
+      "SELECT pg_catalog.lo_close(0);\n" +
+      "COMMIT;";
+    await Bun.write(`${temporary}/transaction.sql`, dump);
+    await split(`${temporary}/transaction.sql`, `${temporary}/transaction`);
+
+    expect(await joined(`${temporary}/transaction`)).toBe(`${dump}\n`);
+  });
 });

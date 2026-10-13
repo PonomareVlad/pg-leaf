@@ -410,9 +410,30 @@ export async function* splitFiles(source, tables, exists = async () => false) {
   const begin = [];
   const end = [];
   let phase = "begin";
+  let transaction = null;
 
   for await (const { text, tokens } of source) {
     const words = tokens.map(upper);
+    if (transaction) {
+      transaction.push(text);
+      if (words[0] === "COMMIT" && words[1] !== "PREPARED") {
+        const contents = transaction.join("");
+        yield await placeContents("data/sql", contents.endsWith("\n") ? contents : `${contents}\n`, exists);
+        transaction = null;
+      }
+      continue;
+    }
+    if (words[0] === "COMMIT" && words[1] !== "PREPARED") throw new Error("COMMIT without BEGIN");
+    if (words[0] === "BEGIN") {
+      if (phase === "begin") {
+        if (begin.length) yield ["begin.sql", `${begin.join("\n\n")}\n`];
+        begin.length = 0;
+        phase = "data";
+      }
+      transaction = [text.slice(tokens[0].start)];
+      continue;
+    }
+
     const next = phaseOf(words);
     if (next && phase === "begin" && begin.length) {
       yield ["begin.sql", `${begin.join("\n\n")}\n`];
@@ -431,6 +452,7 @@ export async function* splitFiles(source, tables, exists = async () => false) {
     }
   }
 
+  if (transaction) throw new Error("BEGIN without COMMIT");
   if (begin.length) yield ["begin.sql", `${begin.join("\n\n")}\n`];
   if (end.length) yield ["end.sql", `${end.join("\n\n")}\n`];
 }

@@ -7,6 +7,8 @@
  * dump   --database "$URL" --output ./snapshot   pg_dump → дерево
  */
 import { parseArgs } from "node:util";
+import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { basename, dirname, join as joinPath, resolve } from "node:path";
 import { $ } from "bun";
 import { collect, splitFiles, statements } from "./sql.js";
 
@@ -19,17 +21,36 @@ export async function split(input, output) {
   const tables = new Map();
   for await (const { tokens } of statements(Bun.file(input).stream())) collect(tokens, tables);
 
-  const temporary = `${output}.tmp`;
-  const exists = (path) => Bun.file(`${temporary}/${path}`).exists();
-  await $`rm -rf ${temporary}`.quiet();
+  const destination = resolve(output);
+  const parent = dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const temporary = await mkdtemp(joinPath(parent, `.${basename(destination)}.tmp-`));
+  const staging = joinPath(temporary, "snapshot");
+  const backup = joinPath(temporary, "previous");
+  let backedUp = false;
+  let committed = false;
   try {
+    await mkdir(staging);
+    const exists = (path) => Bun.file(`${staging}/${path}`).exists();
     for await (const [path, contents] of splitFiles(statements(Bun.file(input).stream()), tables, exists)) {
-      await Bun.write(`${temporary}/${path}`, contents);
+      await Bun.write(`${staging}/${path}`, contents);
     }
-    await $`rm -rf ${output}`.quiet();
-    await $`mv ${temporary} ${output}`.quiet();
+    try {
+      await rename(destination, backup);
+      backedUp = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await rename(staging, destination);
+    committed = true;
+  } catch (error) {
+    if (backedUp) {
+      await rename(backup, destination);
+      backedUp = false;
+    }
+    throw error;
   } finally {
-    await $`rm -rf ${temporary}`.quiet();
+    if (committed || !backedUp) await rm(temporary, { recursive: true, force: true });
   }
 }
 

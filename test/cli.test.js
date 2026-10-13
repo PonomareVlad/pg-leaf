@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { readdir } from "node:fs/promises";
 import { $ } from "bun";
 import { join as joinPath } from "node:path";
 import { join, split } from "../src/cli.js";
@@ -58,5 +59,13 @@ describe("split", () => {
     await split(`${temporary}/transaction.sql`, `${temporary}/transaction`);
 
     expect(await joined(`${temporary}/transaction`)).toBe(`${dump}\n`);
+  });
+
+  test("replaces the previous snapshot with an empty dump", async () => {
+    await Bun.write(`${temporary}/ok.sql`, "CREATE TABLE public.items (id integer PRIMARY KEY);\n");
+    await Bun.write(`${temporary}/empty.sql`, "");
+    await split(`${temporary}/ok.sql`, `${temporary}/empty-snapshot`);
+    await split(`${temporary}/empty.sql`, `${temporary}/empty-snapshot`);
+    expect(await readdir(`${temporary}/empty-snapshot`)).toEqual([]);
   });
 });

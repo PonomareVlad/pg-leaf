@@ -370,7 +370,7 @@ async function placeRow(row, tables, exists) {
   }
   const hash = new Bun.CryptoHasher("sha256").update(contents).digest("hex");
   for (let duplicate = 1; ; duplicate++) {
-    const path = rowPath(row.name, duplicate === 1 ? hash : `${hash}-${duplicate}`);
+    const path = rowPath(row.name, duplicate === 1 ? hash : `${hash}.${duplicate}`);
     if (!(await exists(path))) return [path, contents];
   }
 }
@@ -393,9 +393,9 @@ function phaseOf(words) {
  *
  * Дерево: begin.sql (pre-data) → data/ (записи и чанки) → end.sql (post-data);
  * порядок задаётся лексикографической сортировкой путей при join.
- * Каждый INSERT попадает в отдельный файл, его trivia (комментарии pg_dump)
- * и прочие data-операторы — в чанки с глобальным сквозным номером,
- * размещаемые на уровне директории последней записи.
+ * Каждый INSERT попадает в отдельный файл, прочие data-операторы — в чанки
+ * с глобальным сквозным номером в корне data/ (до записей по сортировке).
+ * Комментарии в data-сегменте отбрасываются; в pre-/post-data сохраняются.
  *
  * @param {AsyncIterable<{text: string, tokens: object[]}>|Iterable} source поток операторов
  * @param {Map} tables уникальные ключи таблиц, собранные первым проходом
@@ -406,9 +406,8 @@ export async function* splitFiles(source, tables, exists = async () => false) {
   const begin = [];
   const end = [];
   let phase = "begin";
-  let level = "data";
   let counter = 0;
-  const chunk = () => `${level}/${String(++counter).padStart(6, "0")}.sql`;
+  const chunk = () => `data/${String(++counter).padStart(6, "0")}.sql`;
 
   for await (const { text, tokens } of source) {
     const words = tokens.map(upper);
@@ -420,13 +419,11 @@ export async function* splitFiles(source, tables, exists = async () => false) {
     if (next) phase = next;
 
     if (words[0] === "INSERT") {
-      const trivia = text.slice(0, tokens[0].start).trim();
-      if (trivia) yield [chunk(), `${trivia}\n`];
       const row = parseInsert(text, tokens);
       yield await placeRow(row, tables, exists);
-      level = `data/${component(row.name.schema)}/${component(row.name.table)}`;
     } else if (phase === "data") {
-      if (text.trim()) yield [chunk(), `${text.trim()}\n`];
+      const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
+      if (statement) yield [chunk(), `${statement}\n`];
     } else if (text.trim()) {
       (phase === "begin" ? begin : end).push(text.trim());
     }

@@ -62,8 +62,8 @@ describe("splitDump", () => {
     const files = await splitDump("INSERT INTO public.logs (m) VALUES ('same');\nINSERT INTO public.logs (m) VALUES ('same');\n");
     const paths = [...files.keys()].sort();
     expect(paths).toHaveLength(2);
-    expect(paths[0]).toMatch(/^data\/public\/logs\/[0-9a-f]{2}\/[0-9a-f]{64}-2\.sql$/);
-    expect(paths[1]).toBe(paths[0].replace("-2.sql", ".sql"));
+    expect(paths[0]).toMatch(/^data\/public\/logs\/[0-9a-f]{2}\/[0-9a-f]{64}\.2\.sql$/);
+    expect(paths[1]).toBe(paths[0].replace(".2.sql", ".sql"));
     expect(files.get(paths[0])).toBe(files.get(paths[1]));
   });
 
@@ -91,14 +91,15 @@ describe("splitDump", () => {
     expect(files.get("end.sql")).toContain("CREATE INDEX");
   });
 
-  test("extracts data segment comments into counter chunks at the current level", async () => {
+  test("drops data segment comments and keeps other data statements in counter chunks", async () => {
     const files = await splitDump(
       "CREATE TABLE public.users (id integer PRIMARY KEY);\n" +
       "-- Data for Name: users\nINSERT INTO public.users (id) VALUES (1);\n" +
-      "-- between rows\nINSERT INTO public.users (id) VALUES (2);\n",
+      "-- noise\nSELECT pg_catalog.setval('public.users_id_seq', 1, true);\n",
     );
-    expect(files.get("data/000001.sql")).toBe("-- Data for Name: users\n");
-    expect(files.get("data/public/users/000002.sql")).toBe("-- between rows\n");
+    expect([...files.keys()].filter((path) => /\/\d{6}\.sql$/.test(path))).toEqual(["data/000001.sql"]);
+    expect(files.get("data/000001.sql")).toBe("SELECT pg_catalog.setval('public.users_id_seq', 1, true);\n");
+    expect([...files.values()].join("")).not.toContain("--");
   });
 
   test("keeps comments inline in pre- and post-data", async () => {

@@ -49,27 +49,7 @@ CREATE SEQUENCE "public"."cities_id_seq"
 
 ALTER SEQUENCE "public"."cities_id_seq" OWNED BY "public"."cities"."id";
 
---
--- Data for Name: cities; Type: TABLE DATA; Schema: public; Owner: -
---
-
---
--- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: -
---
-
---
--- Name: cities_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
 SELECT pg_catalog.setval('"public"."cities_id_seq"', 2, true);
-
---
--- Data for Name: logs; Type: TABLE DATA; Schema: public; Owner: -
---
-
---
--- Data for Name: registrations; Type: TABLE DATA; Schema: public; Owner: -
---
 
 INSERT INTO "public"."cities" (
   "id",

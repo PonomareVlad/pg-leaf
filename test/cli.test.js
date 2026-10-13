@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { $ } from "bun";
 import { join as joinPath } from "node:path";
-import { join, split } from "../src/cli.js";
+import { dump, join, split } from "../src/cli.js";
+import { RESTRICTION_KEY } from "../src/sql.js";
 
 const fixtures = joinPath(import.meta.dir, "../fixtures");
 const temporary = joinPath(import.meta.dir, "../.test-output");
@@ -59,6 +60,35 @@ describe("split", () => {
     await split(`${temporary}/transaction.sql`, `${temporary}/transaction`);
 
     expect(await joined(`${temporary}/transaction`)).toBe(`${dump}\n`);
+  });
+
+  test("join generates a fresh matching restriction key", async () => {
+    await Bun.write(
+      `${temporary}/restricted.sql`,
+      "\\restrict original-key\nCREATE TABLE public.items (id integer PRIMARY KEY);\n\\unrestrict original-key\n",
+    );
+    await split(`${temporary}/restricted.sql`, `${temporary}/restricted`);
+
+    const first = await joined(`${temporary}/restricted`);
+    const second = await joined(`${temporary}/restricted`);
+    const keys = (sql) => [...sql.matchAll(/^\\(?:restrict|unrestrict) ([a-f0-9]{64})$/gm)].map((match) => match[1]);
+    const snapshot = await tree(`${temporary}/restricted`);
+
+    expect(snapshot.map(([, contents]) => contents).join("")).not.toContain("original-key");
+    expect(snapshot.map(([, contents]) => contents).join("")).toContain(RESTRICTION_KEY);
+    expect(keys(first)).toHaveLength(2);
+    expect(keys(first)[0]).toBe(keys(first)[1]);
+    expect(keys(second)[0]).not.toBe(keys(first)[0]);
+  });
+
+  test("dump leaves a pre-existing sibling file untouched", async () => {
+    const output = `${temporary}/safe-dump`;
+    const sibling = `${output}.dump.sql`;
+    await Bun.write(sibling, "preserve me");
+
+    await expect(dump("postgres://127.0.0.1:1/pg_leaf_nonexistent?connect_timeout=1", output)).rejects.toThrow();
+    expect(await Bun.file(sibling).text()).toBe("preserve me");
+    expect((await readdir(temporary)).some((name) => name.startsWith(".safe-dump.dump-"))).toBe(false);
   });
 
   test("replaces the previous snapshot with an empty dump", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { keyHash, parse, splitDump, statements } from "../src/sql.js";
+import { keyHash, parse, RESTRICTION_KEY, splitDump, statements } from "../src/sql.js";
 
 const dump = (rows) => `CREATE TABLE public.users (id integer PRIMARY KEY, name text);
 ${rows.map(([id, name]) => `INSERT INTO public.users (id, name) VALUES (${id}, '${name}');`).join("\n")}
@@ -70,13 +70,62 @@ describe("splitDump", () => {
     expect([...files.keys()].some((path) => /^data\/rows\/public\/users\//.test(path))).toBe(true);
   });
 
-  test("suffixes identical keyless duplicates by probing", async () => {
+  test("assigns fixed-width input ordinals to identical keyless duplicates", async () => {
     const files = await splitDump("INSERT INTO public.logs (m) VALUES ('same');\nINSERT INTO public.logs (m) VALUES ('same');\n");
     const paths = [...files.keys()].sort();
     expect(paths).toHaveLength(2);
-    expect(paths[0]).toMatch(/^data\/rows\/public\/logs\/[0-9a-f]{64}\.2\.sql$/);
-    expect(paths[1]).toBe(paths[0].replace(".2.sql", ".sql"));
+    expect(paths[0]).toBe("data/rows/public/logs/00000000000000000001.sql");
+    expect(paths[1]).toBe("data/rows/public/logs/00000000000000000002.sql");
     expect(files.get(paths[0])).toBe(files.get(paths[1]));
+  });
+
+  test("does not treat quoted constraint and index names as keywords", async () => {
+    const altered = await splitDump(
+      "CREATE TABLE public.items (value integer);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      'ALTER TABLE public.items ADD CONSTRAINT "primary" UNIQUE (value);\n',
+    );
+    const indexed = await splitDump(
+      "CREATE TABLE public.items (value integer);\n" +
+      'CREATE UNIQUE INDEX "distinct" ON public.items (value);\n' +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n",
+    );
+
+    expect([...altered.keys()].filter((path) => path.endsWith(".sql") && path.includes("/items/"))).toHaveLength(2);
+    expect([...indexed.keys()].filter((path) => path.endsWith(".sql") && path.includes("/items/"))).toHaveLength(2);
+  });
+
+  test("recognizes NULLS NOT DISTINCT after an index column list", async () => {
+    await expect(splitDump(
+      "CREATE TABLE public.items (value integer);\n" +
+      "CREATE UNIQUE INDEX value_idx ON public.items (value) NULLS NOT DISTINCT;\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n",
+    )).rejects.toThrow("Duplicate unique key");
+  });
+
+  test("recognizes NULLS NOT DISTINCT after an ALTER TABLE unique kind", async () => {
+    await expect(splitDump(
+      "CREATE TABLE public.items (value integer);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      "INSERT INTO public.items (value) VALUES (NULL);\n" +
+      "ALTER TABLE public.items ADD CONSTRAINT value_idx UNIQUE NULLS NOT DISTINCT (value);\n",
+    )).rejects.toThrow("Duplicate unique key");
+  });
+
+  test("normalizes restriction keys in the snapshot", async () => {
+    const files = await splitDump(
+      "\\restrict random-key\n" +
+      "CREATE TABLE public.items (id integer PRIMARY KEY);\n" +
+      "\\unrestrict random-key\n",
+    );
+    const contents = [...files.values()].join("");
+
+    expect(contents).not.toContain("random-key");
+    expect(contents).toContain(`\\restrict ${RESTRICTION_KEY}`);
+    expect(contents).toContain(`\\unrestrict ${RESTRICTION_KEY}`);
   });
 
   test("rejects duplicate unique keys instead of overwriting a row", async () => {

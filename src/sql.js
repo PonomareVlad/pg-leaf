@@ -56,6 +56,11 @@ function skipNested(sql, lexer, comment) {
 
 const upper = (token) => token?.value?.toUpperCase();
 const isName = (token) => token?.type === "word" || token?.type === "identifier";
+export const RESTRICTION_KEY = "__PG_LEAF_RESTRICTION_KEY__";
+
+function normalizeRestriction(text) {
+  return text.replace(/^\\(restrict|unrestrict)\s+\S+[ \t]*\r?$/gm, `\\$1 ${RESTRICTION_KEY}`);
+}
 
 /** PostgreSQL сворачивает не взятые в кавычки идентификаторы к нижнему регистру. */
 const fold = (token) => (token.type === "word" ? token.value.toLowerCase() : token.value);
@@ -233,11 +238,15 @@ function collectCreateTable(tokens, words, tables) {
 
 /** ALTER TABLE ... ADD [CONSTRAINT имя] PRIMARY KEY | UNIQUE (колонки). */
 function collectAlterTable(tokens, words, tables) {
-  if (!words.includes("ADD") || words.includes("FOREIGN")) return;
-  const primary = words.includes("PRIMARY");
-  if (!primary && !words.includes("UNIQUE")) return;
   const name = readName(tokens, words[2] === "ONLY" ? 3 : 2);
-  const open = tokens.findIndex((token, i) => i > name.next && token.value === "(");
+  const add = words.indexOf("ADD", name.next);
+  if (add === -1) return;
+  let kind = add + 1;
+  if (words[kind] === "CONSTRAINT") kind += 2;
+  const primary = words[kind] === "PRIMARY" && words[kind + 1] === "KEY";
+  const unique = words[kind] === "UNIQUE";
+  if (!primary && !unique) return;
+  const open = tokens.findIndex((token, i) => i >= name.next && token.value === "(");
   const key = readColumns(tokens, open);
   if (!key) return;
   const info = tableFor(tables, name.key);
@@ -245,7 +254,9 @@ function collectAlterTable(tokens, words, tables) {
     info.primary = key.columns;
     for (const column of key.columns) info.notNull.add(column);
   } else {
-    info.unique.push({ columns: key.columns, nullsNotDistinct: words.includes("DISTINCT") });
+    const nullsNotDistinct = words[kind + 1] === "NULLS" &&
+      words[kind + 2] === "NOT" && words[kind + 3] === "DISTINCT";
+    info.unique.push({ columns: key.columns, nullsNotDistinct });
   }
 }
 
@@ -254,10 +265,12 @@ function collectUniqueIndex(tokens, words, tables) {
   if (words.includes("WHERE")) return;
   const on = words.indexOf("ON");
   const name = readName(tokens, words[on + 1] === "ONLY" ? on + 2 : on + 1);
-  const open = tokens.findIndex((token, i) => i > name.next && token.value === "(");
+  const open = tokens.findIndex((token, i) => i >= name.next && token.value === "(");
   const key = readColumns(tokens, open);
   if (!key) return;
-  tableFor(tables, name.key).unique.push({ columns: key.columns, nullsNotDistinct: words.includes("DISTINCT") });
+  const nullsNotDistinct = words[key.close + 1] === "NULLS" &&
+    words[key.close + 2] === "NOT" && words[key.close + 3] === "DISTINCT";
+  tableFor(tables, name.key).unique.push({ columns: key.columns, nullsNotDistinct });
 }
 
 /**
@@ -364,18 +377,20 @@ async function placeContents(directory, contents, exists) {
 
 /**
  * Путь и содержимое файла записи. Записи с уникальным ключом идентифицируются
- * хешем ключа, дубликат — ошибка. Остальные — хешем содержимого.
+ * хешем ключа, дубликат — ошибка. Остальные — порядковым номером во входном дампе.
  */
-async function placeRow(row, tables, exists) {
+async function placeRow(row, tables, ordinals, exists) {
   const contents = formatInsert(row);
   const directory = `data/rows/${component(row.name.schema)}/${component(row.name.table)}`;
+  const ordinal = (ordinals.get(row.name.key) ?? 0n) + 1n;
+  ordinals.set(row.name.key, ordinal);
   const key = selectKey(tables.get(row.name.key));
   if (key?.every((column) => row.columns.includes(column))) {
     const path = `${directory}/${keyHash(key.map((column) => row.values[row.columns.indexOf(column)]))}.sql`;
     if (await exists(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
     return [path, contents];
   }
-  return placeContents(directory, contents, exists);
+  return [`${directory}/${ordinal.toString().padStart(20, "0")}.sql`, contents];
 }
 
 // --- Разделение дампа ---------------------------------------------------------
@@ -409,13 +424,15 @@ function phaseOf(words) {
 export async function* splitFiles(source, tables, exists = async () => false) {
   const begin = [];
   const end = [];
+  const ordinals = new Map();
   let phase = "begin";
   let transaction = null;
 
   for await (const { text, tokens } of source) {
+    const normalizedText = normalizeRestriction(text);
     const words = tokens.map(upper);
     if (transaction) {
-      transaction.push(text);
+      transaction.push(normalizedText);
       if (words[0] === "COMMIT" && words[1] !== "PREPARED") {
         const contents = transaction.join("");
         yield await placeContents("data/sql", contents.endsWith("\n") ? contents : `${contents}\n`, exists);
@@ -443,12 +460,12 @@ export async function* splitFiles(source, tables, exists = async () => false) {
 
     if (words[0] === "INSERT") {
       const row = parseInsert(text, tokens);
-      yield await placeRow(row, tables, exists);
+      yield await placeRow(row, tables, ordinals, exists);
     } else if (phase === "data") {
       const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
-      if (statement) yield await placeContents("data/sql", `${statement}\n`, exists);
+      if (statement) yield await placeContents("data/sql", `${normalizeRestriction(statement)}\n`, exists);
     } else if (text.trim()) {
-      (phase === "begin" ? begin : end).push(text.trim());
+      (phase === "begin" ? begin : end).push(normalizedText.trim());
     }
   }
 

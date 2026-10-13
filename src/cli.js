@@ -7,10 +7,11 @@
  * dump   --database "$URL" --output ./snapshot   pg_dump → дерево
  */
 import { parseArgs } from "node:util";
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { basename, dirname, join as joinPath, resolve } from "node:path";
 import { $ } from "bun";
-import { collect, splitFiles, statements } from "./sql.js";
+import { collect, RESTRICTION_KEY, splitFiles, statements } from "./sql.js";
 
 /**
  * Потоково делит файл дампа на дерево снимка: два прохода по файлу,
@@ -57,25 +58,34 @@ export async function split(input, output) {
 /** Потоково отдаёт .sql файлы снимка в детерминированном порядке путей, разделяя пустой строкой. */
 export async function* join(snapshot) {
   const paths = [...new Bun.Glob("**/*.sql").scanSync(snapshot)].sort();
+  const restrictionKey = randomBytes(32).toString("hex");
   for (const [index, path] of paths.entries()) {
     if (index) yield "\n";
-    yield await Bun.file(`${snapshot}/${path}`).text();
+    const contents = await Bun.file(`${snapshot}/${path}`).text();
+    yield contents.replace(
+      new RegExp(String.raw`^\\(restrict|unrestrict) ${RESTRICTION_KEY}$`, "gm"),
+      `\\$1 ${restrictionKey}`,
+    );
   }
 }
 
 /** Снимает plain-дамп базы во временный файл (нужны два прохода) и делит его. */
 export async function dump(database, output) {
-  const pgDump = Bun.spawn(
-    ["pg_dump", "--format=plain", "--column-inserts", "--rows-per-insert=1", "--quote-all-identifiers", "--encoding=UTF8", `--dbname=${database}`],
-    { stderr: "inherit" },
-  );
-  const temporary = `${output}.dump.sql`;
+  const destination = resolve(output);
+  const parent = dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const temporary = await mkdtemp(joinPath(parent, `.${basename(destination)}.dump-`));
+  const dumpFile = joinPath(temporary, "dump.sql");
   try {
-    await Bun.write(temporary, new Response(pgDump.stdout));
+    const pgDump = Bun.spawn(
+      ["pg_dump", "--format=plain", "--column-inserts", "--rows-per-insert=1", "--quote-all-identifiers", "--encoding=UTF8", `--dbname=${database}`],
+      { stderr: "inherit" },
+    );
+    await Bun.write(dumpFile, new Response(pgDump.stdout));
     if (await pgDump.exited) throw new Error("pg_dump failed");
-    await split(temporary, output);
+    await split(dumpFile, output);
   } finally {
-    await $`rm -f ${temporary}`.quiet();
+    await rm(temporary, { recursive: true, force: true });
   }
 }
 

@@ -377,20 +377,18 @@ async function placeContents(directory, contents, exists) {
 
 /**
  * Путь и содержимое файла записи. Записи с уникальным ключом идентифицируются
- * хешем ключа, дубликат — ошибка. Остальные — порядковым номером во входном дампе.
+ * хешем ключа, дубликат — ошибка. Остальные — хешем содержимого.
  */
-async function placeRow(row, tables, ordinals, exists) {
+async function placeRow(row, tables, exists) {
   const contents = formatInsert(row);
   const directory = `data/rows/${component(row.name.schema)}/${component(row.name.table)}`;
-  const ordinal = (ordinals.get(row.name.key) ?? 0n) + 1n;
-  ordinals.set(row.name.key, ordinal);
   const key = selectKey(tables.get(row.name.key));
   if (key?.every((column) => row.columns.includes(column))) {
     const path = `${directory}/${keyHash(key.map((column) => row.values[row.columns.indexOf(column)]))}.sql`;
     if (await exists(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
     return [path, contents];
   }
-  return [`${directory}/${ordinal.toString().padStart(20, "0")}.sql`, contents];
+  return placeContents(directory, contents, exists);
 }
 
 // --- Разделение дампа ---------------------------------------------------------
@@ -424,7 +422,6 @@ function phaseOf(words) {
 export async function* splitFiles(source, tables, exists = async () => false) {
   const begin = [];
   const end = [];
-  const ordinals = new Map();
   let phase = "begin";
   let transaction = null;
 
@@ -460,7 +457,7 @@ export async function* splitFiles(source, tables, exists = async () => false) {
 
     if (words[0] === "INSERT") {
       const row = parseInsert(text, tokens);
-      yield await placeRow(row, tables, ordinals, exists);
+      yield await placeRow(row, tables, exists);
     } else if (phase === "data") {
       const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
       if (statement) yield await placeContents("data/sql", `${normalizeRestriction(statement)}\n`, exists);

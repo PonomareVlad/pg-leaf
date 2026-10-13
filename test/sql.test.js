@@ -70,12 +70,13 @@ describe("splitDump", () => {
     expect([...files.keys()].some((path) => /^data\/rows\/public\/users\//.test(path))).toBe(true);
   });
 
-  test("assigns fixed-width input ordinals to identical keyless duplicates", async () => {
+  test("suffixes identical keyless duplicates by probing", async () => {
     const files = await splitDump("INSERT INTO public.logs (m) VALUES ('same');\nINSERT INTO public.logs (m) VALUES ('same');\n");
     const paths = [...files.keys()].sort();
     expect(paths).toHaveLength(2);
-    expect(paths[0]).toBe("data/rows/public/logs/00000000000000000001.sql");
-    expect(paths[1]).toBe("data/rows/public/logs/00000000000000000002.sql");
+    const hash = new Bun.CryptoHasher("sha256").update(files.get(paths[1])).digest("hex");
+    expect(paths[1]).toBe(`data/rows/public/logs/${hash}.sql`);
+    expect(paths[1]).toBe(paths[0].replace(".2.sql", ".sql"));
     expect(files.get(paths[0])).toBe(files.get(paths[1]));
   });
 

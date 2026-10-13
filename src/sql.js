@@ -113,6 +113,12 @@ export async function* statements(source) {
           }
           if (text === "/" && buffer[lexer.lastIndex] === "*") return;
         }
+        if (final && (text === "'" || text === '"')) {
+          throw new Error("Unterminated SQL string or quoted identifier");
+        }
+        if (final && text === "$" && /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(buffer.slice(cursor))) {
+          throw new Error("Unterminated dollar-quoted string");
+        }
         if (text.startsWith("/*") && !skipNested(buffer, lexer, text)) {
           if (!final) return;
           throw new Error("Unterminated block comment");
@@ -420,38 +426,45 @@ function phaseOf(words) {
  * @yields {[string, string]} относительный путь → содержимое файла
  */
 export async function* splitFiles(source, tables, exists = async () => false) {
-  const begin = [];
-  const end = [];
+  let beginStarted = false;
+  let endStarted = false;
   let phase = "begin";
   let transaction = null;
+  let transactionPath = null;
+  let orderedStatement = 0;
+
+  const orderedPath = () => `data/sql/${String(orderedStatement++).padStart(20, "0")}.sql`;
 
   for await (const { text, tokens } of source) {
     const normalizedText = normalizeRestriction(text);
     const words = tokens.map(upper);
     if (transaction) {
-      transaction.push(normalizedText);
+      const statement = normalizedText.trim();
+      if (statement) yield [transactionPath, `${statement}\n`];
       if (words[0] === "COMMIT" && words[1] !== "PREPARED") {
-        const contents = transaction.join("");
-        yield await placeContents("data/sql", contents.endsWith("\n") ? contents : `${contents}\n`, exists);
         transaction = null;
+        transactionPath = null;
       }
       continue;
     }
     if (words[0] === "COMMIT" && words[1] !== "PREPARED") throw new Error("COMMIT without BEGIN");
     if (words[0] === "BEGIN") {
       if (phase === "begin") {
-        if (begin.length) yield ["begin.sql", `${begin.join("\n\n")}\n`];
-        begin.length = 0;
+        if (beginStarted) yield ["begin.sql", "\n"];
+        beginStarted = false;
         phase = "data";
       }
-      transaction = [text.slice(tokens[0].start)];
+      transaction = true;
+      transactionPath = orderedPath();
+      const statement = text.slice(tokens[0].start).trim();
+      if (statement) yield [transactionPath, `${statement}\n`];
       continue;
     }
 
     const next = phaseOf(words);
-    if (next && phase === "begin" && begin.length) {
-      yield ["begin.sql", `${begin.join("\n\n")}\n`];
-      begin.length = 0;
+    if (next && phase === "begin" && beginStarted) {
+      yield ["begin.sql", "\n"];
+      beginStarted = false;
     }
     if (next) phase = next;
 
@@ -460,15 +473,22 @@ export async function* splitFiles(source, tables, exists = async () => false) {
       yield await placeRow(row, tables, exists);
     } else if (phase === "data") {
       const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
-      if (statement) yield await placeContents("data/sql", `${normalizeRestriction(statement)}\n`, exists);
+      if (statement) yield [orderedPath(), `${normalizeRestriction(statement)}\n`];
     } else if (text.trim()) {
-      (phase === "begin" ? begin : end).push(normalizedText.trim());
+      const statement = normalizedText.trim();
+      if (phase === "begin") {
+        yield ["begin.sql", `${beginStarted ? "\n\n" : ""}${statement}`];
+        beginStarted = true;
+      } else {
+        yield ["end.sql", `${endStarted ? "\n\n" : ""}${statement}`];
+        endStarted = true;
+      }
     }
   }
 
   if (transaction) throw new Error("BEGIN without COMMIT");
-  if (begin.length) yield ["begin.sql", `${begin.join("\n\n")}\n`];
-  if (end.length) yield ["end.sql", `${end.join("\n\n")}\n`];
+  if (beginStarted) yield ["begin.sql", "\n"];
+  if (endStarted) yield ["end.sql", "\n"];
 }
 
 /** Делит дамп-строку на Map путь → содержимое (для тестов и мелких дампов). */
@@ -478,7 +498,7 @@ export async function splitDump(sql) {
   for (const { tokens } of parsed) collect(tokens, tables);
   const files = new Map();
   for await (const [path, contents] of splitFiles(parsed, tables, async (path) => files.has(path))) {
-    files.set(path, contents);
+    files.set(path, `${files.get(path) ?? ""}${contents}`);
   }
   return files;
 }

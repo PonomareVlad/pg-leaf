@@ -24,6 +24,12 @@ describe("parse", () => {
     });
   });
 
+  test("rejects unfinished strings, quoted identifiers, and dollar quotes", async () => {
+    for (const sql of ["SELECT 'unfinished", 'SELECT "unfinished', "SELECT $$unfinished", "SELECT $body$unfinished"]) {
+      await expect(parse(sql)).rejects.toThrow(/Unterminated/);
+    }
+  });
+
   test("keeps COPY FROM stdin data intact", async () => {
     const copy = "COPY public.items (id) FROM stdin;\n1\tvalue; ' -- text\n\\.\n";
     expect((await parse(copy))[0].text).toBe(copy);
@@ -153,14 +159,17 @@ describe("splitDump", () => {
     expect(files.get("end.sql")).toContain("CREATE INDEX");
   });
 
-  test("drops data segment comments and hashes other data statements into chunks", async () => {
+  test("drops data comments and preserves the order of opaque data statements", async () => {
     const files = await splitDump(
       "CREATE TABLE public.users (id integer PRIMARY KEY);\n" +
       "-- Data for Name: users\nINSERT INTO public.users (id) VALUES (1);\n" +
-      "-- noise\nSELECT pg_catalog.setval('public.users_id_seq', 1, true);\n",
+      "-- noise\nSELECT first_operation();\nSELECT second_operation();\n",
     );
-    const chunk = [...files.keys()].find((path) => /^data\/sql\/[0-9a-f]{64}\.sql$/.test(path));
-    expect(files.get(chunk)).toBe("SELECT pg_catalog.setval('public.users_id_seq', 1, true);\n");
+    const chunks = [...files.entries()].filter(([path]) => /^data\/sql\/\d{20}\.sql$/.test(path));
+    expect(chunks.map(([, contents]) => contents)).toEqual([
+      "SELECT first_operation();\n",
+      "SELECT second_operation();\n",
+    ]);
     expect([...files.values()].join("")).not.toContain("--");
   });
 
@@ -175,7 +184,7 @@ describe("splitDump", () => {
     const entries = [...files.entries()];
 
     expect(entries).toHaveLength(1);
-    expect(entries[0][0]).toMatch(/^data\/sql\/[0-9a-f]{64}\.sql$/);
+    expect(entries[0][0]).toMatch(/^data\/sql\/\d{20}\.sql$/);
     expect(entries[0][1]).toBe(`${transaction}\n`);
   });
 

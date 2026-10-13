@@ -8,7 +8,7 @@
  */
 import { parseArgs } from "node:util";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join as joinPath, resolve } from "node:path";
 import { $ } from "bun";
 import { collect, RESTRICTION_KEY, splitFiles, statements } from "./sql.js";
@@ -33,8 +33,20 @@ export async function split(input, output) {
   try {
     await mkdir(staging);
     const exists = (path) => Bun.file(`${staging}/${path}`).exists();
-    for await (const [path, contents] of splitFiles(statements(Bun.file(input).stream()), tables, exists)) {
-      await Bun.write(`${staging}/${path}`, contents);
+    const outputs = new Map();
+    try {
+      for await (const [path, contents] of splitFiles(statements(Bun.file(input).stream()), tables, exists)) {
+        const filename = joinPath(staging, path);
+        let file = outputs.get(filename);
+        if (!file) {
+          await mkdir(dirname(filename), { recursive: true });
+          file = await open(filename, "a");
+          outputs.set(filename, file);
+        }
+        await file.writeFile(contents);
+      }
+    } finally {
+      await Promise.all([...outputs.values()].map((file) => file.close()));
     }
     try {
       await rename(destination, backup);

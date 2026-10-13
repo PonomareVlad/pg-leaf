@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 7C82qCyGoTPi6pxuLUUtUq3KEayczOeoiaPfQWUefFsVhpPqqRSQgxJx0uyQi2h
+\restrict 45qDU2RgUdzP1Gao11evd3lZSuJsuFxexnmCKYiPYKglYE16NextnjlZ72wdPFt
 
 -- Dumped from database version 16.15 (Debian 16.15-1.pgdg13+2)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-1.pgdg24.04+2)
@@ -21,6 +21,17 @@ SET row_security = off;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: logs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.logs (
+    message text NOT NULL
+);
+
+
+ALTER TABLE public.logs OWNER TO postgres;
 
 --
 -- Name: orders; Type: TABLE; Schema: public; Owner: postgres
@@ -150,36 +161,39 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
+-- Data for Name: logs; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+INSERT INTO public.logs VALUES ('ping');
+INSERT INTO public.logs VALUES ('ping');
+INSERT INTO public.logs VALUES ('pong');
+
+
+--
 -- Data for Name: orders; Type: TABLE DATA; Schema: public; Owner: postgres
 --
 
-COPY public.orders (id, user_id, product_id, quantity) FROM stdin;
-1	1	1	2
-2	2	3	1
-3	3	2	5
-\.
+INSERT INTO public.orders VALUES (1, 1, 1, 2);
+INSERT INTO public.orders VALUES (2, 2, 3, 1);
+INSERT INTO public.orders VALUES (3, 3, 2, 5);
 
 
 --
 -- Data for Name: products; Type: TABLE DATA; Schema: public; Owner: postgres
 --
 
-COPY public.products (id, title, price) FROM stdin;
-1	Leaf	9.99
-2	Branch	19.50
-3	Tree	100.00
-\.
+INSERT INTO public.products VALUES (1, 'Leaf', 9.99);
+INSERT INTO public.products VALUES (2, 'Branch', 19.50);
+INSERT INTO public.products VALUES (3, 'Tree', 100.00);
 
 
 --
 -- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: postgres
 --
 
-COPY public.users (id, name, email) FROM stdin;
-1	Alice	alice@example.com
-2	Bob	bob@example.com
-3	Carol	\N
-\.
+INSERT INTO public.users VALUES (1, 'Alice', 'alice@example.com');
+INSERT INTO public.users VALUES (2, 'Bob', 'bob@example.com');
+INSERT INTO public.users VALUES (3, 'Carol', NULL);
 
 
 --
@@ -255,5 +269,5 @@ ALTER TABLE ONLY public.orders
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 7C82qCyGoTPi6pxuLUUtUq3KEayczOeoiaPfQWUefFsVhpPqqRSQgxJx0uyQi2h
+\unrestrict 45qDU2RgUdzP1Gao11evd3lZSuJsuFxexnmCKYiPYKglYE16NextnjlZ72wdPFt
 

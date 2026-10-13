@@ -34,3 +34,23 @@ export const split = sql => {
 };
 
 export const join = chunks => chunks.map(({lines}) => lines.join("")).join("");
+
+// statement-level pass over a table data chunk:
+// yields complete INSERT statements (possibly multi-line) and passes other lines through as-is
+export function* statements(lines) {
+    let insert = [];
+    for (const line of lines) {
+        switch (true) {
+            case insert.length > 0 || line.startsWith("INSERT "):
+                insert.push(line);
+                if (line.trimEnd().endsWith(";")) {
+                    yield {kind: "insert", text: insert.join("")};
+                    insert = [];
+                }
+                break;
+            default:
+                yield {kind: "other", text: line};
+        }
+    }
+    if (insert.length) yield {kind: "insert", text: insert.join("")};
+}

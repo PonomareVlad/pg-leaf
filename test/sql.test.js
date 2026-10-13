@@ -91,14 +91,14 @@ describe("splitDump", () => {
     expect(files.get("end.sql")).toContain("CREATE INDEX");
   });
 
-  test("drops data segment comments and keeps other data statements in counter chunks", async () => {
+  test("drops data segment comments and hashes other data statements into chunks", async () => {
     const files = await splitDump(
       "CREATE TABLE public.users (id integer PRIMARY KEY);\n" +
       "-- Data for Name: users\nINSERT INTO public.users (id) VALUES (1);\n" +
       "-- noise\nSELECT pg_catalog.setval('public.users_id_seq', 1, true);\n",
     );
-    expect([...files.keys()].filter((path) => /\/\d{6}\.sql$/.test(path))).toEqual(["data/000001.sql"]);
-    expect(files.get("data/000001.sql")).toBe("SELECT pg_catalog.setval('public.users_id_seq', 1, true);\n");
+    const chunk = [...files.keys()].find((path) => /^data\/[0-9a-f]{2}\/[0-9a-f]{64}\.sql$/.test(path));
+    expect(files.get(chunk)).toBe("SELECT pg_catalog.setval('public.users_id_seq', 1, true);\n");
     expect([...files.values()].join("")).not.toContain("--");
   });
 

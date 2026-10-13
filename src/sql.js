@@ -350,29 +350,34 @@ function component(name) {
   return `${name.toLowerCase().replace(/[^a-z0-9_]+/g, "_")}-${keyHash([name]).slice(0, 8)}`;
 }
 
-/** Путь файла записи: идентификаторы раскладываются по префиксным директориям. */
-function rowPath({ schema, table }, id) {
-  return `data/${component(schema)}/${component(table)}/${id.slice(0, 2)}/${id}.sql`;
+/**
+ * Путь и содержимое файла с хешем содержимого в имени: идентичные дубликаты
+ * получают числовой суффикс, свободный номер находится перебором.
+ */
+async function placeContents(directory, contents, exists) {
+  const hash = new Bun.CryptoHasher("sha256").update(contents).digest("hex");
+  for (let duplicate = 1; ; duplicate++) {
+    const id = duplicate === 1 ? hash : `${hash}.${duplicate}`;
+    const path = `${directory}/${id.slice(0, 2)}/${id}.sql`;
+    if (!(await exists(path))) return [path, contents];
+  }
 }
 
 /**
  * Путь и содержимое файла записи. Записи с уникальным ключом идентифицируются
- * хешем ключа, дубликат — ошибка. Остальные — хешем содержимого; идентичные
- * дубликаты получают числовой суффикс, свободный номер находится перебором.
+ * хешем ключа, дубликат — ошибка. Остальные — хешем содержимого.
  */
 async function placeRow(row, tables, exists) {
   const contents = formatInsert(row);
+  const directory = `data/${component(row.name.schema)}/${component(row.name.table)}`;
   const key = selectKey(tables.get(row.name.key));
   if (key?.every((column) => row.columns.includes(column))) {
-    const path = rowPath(row.name, keyHash(key.map((column) => row.values[row.columns.indexOf(column)])));
+    const id = keyHash(key.map((column) => row.values[row.columns.indexOf(column)]));
+    const path = `${directory}/${id.slice(0, 2)}/${id}.sql`;
     if (await exists(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
     return [path, contents];
   }
-  const hash = new Bun.CryptoHasher("sha256").update(contents).digest("hex");
-  for (let duplicate = 1; ; duplicate++) {
-    const path = rowPath(row.name, duplicate === 1 ? hash : `${hash}.${duplicate}`);
-    if (!(await exists(path))) return [path, contents];
-  }
+  return placeContents(directory, contents, exists);
 }
 
 // --- Разделение дампа ---------------------------------------------------------
@@ -393,8 +398,9 @@ function phaseOf(words) {
  *
  * Дерево: begin.sql (pre-data) → data/ (записи и чанки) → end.sql (post-data);
  * порядок задаётся лексикографической сортировкой путей при join.
- * Каждый INSERT попадает в отдельный файл, прочие data-операторы — в чанки
- * с глобальным сквозным номером в корне data/ (до записей по сортировке).
+ * Каждый INSERT попадает в отдельный файл записи, прочие data-операторы
+ * (setval, COPY) — в чанки с хешем содержимого в корне data/; операторы
+ * data-сегмента взаимно независимы, поэтому их порядок не важен.
  * Комментарии в data-сегменте отбрасываются; в pre-/post-data сохраняются.
  *
  * @param {AsyncIterable<{text: string, tokens: object[]}>|Iterable} source поток операторов
@@ -406,8 +412,6 @@ export async function* splitFiles(source, tables, exists = async () => false) {
   const begin = [];
   const end = [];
   let phase = "begin";
-  let counter = 0;
-  const chunk = () => `data/${String(++counter).padStart(6, "0")}.sql`;
 
   for await (const { text, tokens } of source) {
     const words = tokens.map(upper);
@@ -423,7 +427,7 @@ export async function* splitFiles(source, tables, exists = async () => false) {
       yield await placeRow(row, tables, exists);
     } else if (phase === "data") {
       const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
-      if (statement) yield [chunk(), `${statement}\n`];
+      if (statement) yield await placeContents("data", `${statement}\n`, exists);
     } else if (text.trim()) {
       (phase === "begin" ? begin : end).push(text.trim());
     }

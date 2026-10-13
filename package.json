@@ -1,0 +1,11 @@
+{
+  "name": "pg-leaf",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pg-leaf": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}

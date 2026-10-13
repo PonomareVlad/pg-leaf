@@ -1682,3 +1682,24 @@ GitHub либо другой Git remote отвечает за удалённое
 - GitHub repository limits: https://docs.github.com/en/repositories/creating-and-managing-repositories/repository-limits
 - SQL Formatter: https://github.com/sql-formatter-org/sql-formatter
 - Bun: https://bun.com/docs
+
+---
+
+## Текущий прототип
+
+Начальная версия предоставляет команды `split`, `join` и `dump`:
+
+```bash
+bun src/cli.js split dump.sql --output ./snapshot
+bun src/cli.js join ./snapshot --output restored.sql
+bun src/cli.js join ./snapshot --stdout | psql -X -v ON_ERROR_STOP=1 -d target_database
+bun src/cli.js dump --database "$DATABASE_URL" --output ./snapshot
+```
+
+Для `dump` вызывается `pg_dump` с plain SQL, `--column-inserts`, `--rows-per-insert=1`, UTF-8 и quoted identifiers. Реализация Bun-native и потоковая: дамп читается двумя проходами через `Bun.file(...).stream()` (память ограничена одним оператором), используются `Bun.write`, `Bun.Glob`, `Bun.spawn`, `Bun.CryptoHasher`. Дерево снимка пишется во временную директорию и заменяет прежний снимок только после успешного разбора.
+
+Структура снимка: `begin.sql` (pre-data) → `data/` → `end.sql` (post-data); порядок восстановления задаётся натуральной сортировкой путей. Каждый `INSERT` переформатируется в каноничный многострочный вид и попадает в `data/rows/<схема>/<таблица>/<hash>.sql`, где hash — SHA-256 уникального ключа записи, либо, для таблиц без ключа, SHA-256 содержимого; идентичные дубликаты получают числовой суффикс (`.2`, `.3`, …), свободный номер находится перебором. Прочие операторы data-сегмента (`setval`, `COPY`) выделяются в чанки, адресуемые так же — SHA-256 содержимого в `data/sql/<hash>.sql` — и не смешиваются с записями при сортировке (операторы data-сегмента взаимно независимы, поэтому их порядок не важен); комментарии в data-сегменте отбрасываются, в pre-/post-data сохраняются inline.
+
+`split` и `join` образуют неподвижную точку: повторный `split` результата `join` даёт байт-в-байт то же дерево. Зеркальная пара `fixtures/dump.sql` ⇄ `fixtures/snapshot/` хранится в репозитории в каноничном формате и проверяется тестами; при изменении алгоритма fixtures перегенерируются командами `split`/`join` друг из друга.
+
+Прототип поддерживает `INSERT ... VALUES` с одной строкой и `INSERT ... DEFAULT VALUES`; команды `COPY` и другие SQL-фрагменты сохраняются непрозрачно, а неизвестная форма `INSERT` приводит к ошибке, а не к пропуску строки. Интеграционные тесты (`test/integration.test.js`) проверяют полный round trip: `pg_dump` → `split` → `join` → `psql` → повторный `pg_dump` байт-в-байт совпадает с исходным (с точностью до случайного токена `\restrict`), а `split` реального дампа является неподвижной точкой.

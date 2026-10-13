@@ -357,8 +357,7 @@ function component(name) {
 async function placeContents(directory, contents, exists) {
   const hash = new Bun.CryptoHasher("sha256").update(contents).digest("hex");
   for (let duplicate = 1; ; duplicate++) {
-    const id = duplicate === 1 ? hash : `${hash}.${duplicate}`;
-    const path = `${directory}/${id.slice(0, 2)}/${id}.sql`;
+    const path = `${directory}/${duplicate === 1 ? hash : `${hash}.${duplicate}`}.sql`;
     if (!(await exists(path))) return [path, contents];
   }
 }
@@ -369,11 +368,10 @@ async function placeContents(directory, contents, exists) {
  */
 async function placeRow(row, tables, exists) {
   const contents = formatInsert(row);
-  const directory = `data/${component(row.name.schema)}/${component(row.name.table)}`;
+  const directory = `data/rows/${component(row.name.schema)}/${component(row.name.table)}`;
   const key = selectKey(tables.get(row.name.key));
   if (key?.every((column) => row.columns.includes(column))) {
-    const id = keyHash(key.map((column) => row.values[row.columns.indexOf(column)]));
-    const path = `${directory}/${id.slice(0, 2)}/${id}.sql`;
+    const path = `${directory}/${keyHash(key.map((column) => row.values[row.columns.indexOf(column)]))}.sql`;
     if (await exists(path)) throw new Error(`Duplicate unique key or hash collision: ${path}`);
     return [path, contents];
   }
@@ -398,9 +396,9 @@ function phaseOf(words) {
  *
  * Дерево: begin.sql (pre-data) → data/ (записи и чанки) → end.sql (post-data);
  * порядок задаётся лексикографической сортировкой путей при join.
- * Каждый INSERT попадает в отдельный файл записи, прочие data-операторы
- * (setval, COPY) — в чанки с хешем содержимого в корне data/; операторы
- * data-сегмента взаимно независимы, поэтому их порядок не важен.
+ * Каждый INSERT попадает в отдельный файл записи в data/rows/, прочие
+ * data-операторы (setval, COPY) — в чанки с хешем содержимого в data/sql/;
+ * операторы data-сегмента взаимно независимы, поэтому их порядок не важен.
  * Комментарии в data-сегменте отбрасываются; в pre-/post-data сохраняются.
  *
  * @param {AsyncIterable<{text: string, tokens: object[]}>|Iterable} source поток операторов
@@ -427,7 +425,7 @@ export async function* splitFiles(source, tables, exists = async () => false) {
       yield await placeRow(row, tables, exists);
     } else if (phase === "data") {
       const statement = tokens.length ? text.slice(tokens[0].start).trim() : "";
-      if (statement) yield await placeContents("data", `${statement}\n`, exists);
+      if (statement) yield await placeContents("data/sql", `${statement}\n`, exists);
     } else if (text.trim()) {
       (phase === "begin" ? begin : end).push(text.trim());
     }

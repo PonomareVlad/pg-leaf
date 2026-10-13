@@ -49,8 +49,6 @@ CREATE SEQUENCE "public"."cities_id_seq"
 
 ALTER SEQUENCE "public"."cities_id_seq" OWNED BY "public"."cities"."id";
 
-SELECT pg_catalog.setval('"public"."cities_id_seq"', 2, true);
-
 INSERT INTO "public"."cities" (
   "id",
   "name"
@@ -140,6 +138,8 @@ INSERT INTO "public"."users" (
   1,
   120
 );
+
+SELECT pg_catalog.setval('"public"."cities_id_seq"', 2, true);
 
 --
 -- Name: cities cities_pkey; Type: CONSTRAINT; Schema: public; Owner: -

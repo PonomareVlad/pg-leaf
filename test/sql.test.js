@@ -44,8 +44,8 @@ describe("splitDump", () => {
 
   test("formats each row as a canonical multi-line INSERT", async () => {
     const files = await splitDump(dump([[1, "Alice"]]));
-    const [path, contents] = [...files.entries()].find(([key]) => key.startsWith("data/public/"));
-    expect(path).toMatch(/^data\/public\/users\/[0-9a-f]{2}\/[0-9a-f]{64}\.sql$/);
+    const [path, contents] = [...files.entries()].find(([key]) => key.startsWith("data/rows/public/"));
+    expect(path).toMatch(/^data\/rows\/public\/users\/[0-9a-f]{64}\.sql$/);
     expect(contents).toBe('INSERT INTO "public"."users" (\n  "id",\n  "name"\n) VALUES (\n  1,\n  \'Alice\'\n);\n');
   });
 
@@ -55,14 +55,14 @@ describe("splitDump", () => {
       "INSERT INTO public.users (id) VALUES (7);\n" +
       "ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n",
     );
-    expect([...files.keys()].some((path) => /^data\/public\/users\//.test(path))).toBe(true);
+    expect([...files.keys()].some((path) => /^data\/rows\/public\/users\//.test(path))).toBe(true);
   });
 
   test("suffixes identical keyless duplicates by probing", async () => {
     const files = await splitDump("INSERT INTO public.logs (m) VALUES ('same');\nINSERT INTO public.logs (m) VALUES ('same');\n");
     const paths = [...files.keys()].sort();
     expect(paths).toHaveLength(2);
-    expect(paths[0]).toMatch(/^data\/public\/logs\/[0-9a-f]{2}\/[0-9a-f]{64}\.2\.sql$/);
+    expect(paths[0]).toMatch(/^data\/rows\/public\/logs\/[0-9a-f]{64}\.2\.sql$/);
     expect(paths[1]).toBe(paths[0].replace(".2.sql", ".sql"));
     expect(files.get(paths[0])).toBe(files.get(paths[1]));
   });
@@ -97,7 +97,7 @@ describe("splitDump", () => {
       "-- Data for Name: users\nINSERT INTO public.users (id) VALUES (1);\n" +
       "-- noise\nSELECT pg_catalog.setval('public.users_id_seq', 1, true);\n",
     );
-    const chunk = [...files.keys()].find((path) => /^data\/[0-9a-f]{2}\/[0-9a-f]{64}\.sql$/.test(path));
+    const chunk = [...files.keys()].find((path) => /^data\/sql\/[0-9a-f]{64}\.sql$/.test(path));
     expect(files.get(chunk)).toBe("SELECT pg_catalog.setval('public.users_id_seq', 1, true);\n");
     expect([...files.values()].join("")).not.toContain("--");
   });
@@ -111,6 +111,6 @@ describe("splitDump", () => {
   test("encodes unsafe schema and table names deterministically", async () => {
     const files = await splitDump('INSERT INTO "Мой Проект"."User Data" ("id") VALUES (1);');
     const path = [...files.keys()].find((key) => key.split("/").length === 5);
-    expect(path).toMatch(/^data\/_-[0-9a-f]{8}\/user_data-[0-9a-f]{8}\//);
+    expect(path).toMatch(/^data\/rows\/_-[0-9a-f]{8}\/user_data-[0-9a-f]{8}\//);
   });
 });

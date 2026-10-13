@@ -1,44 +1,49 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { main } from "../src/cli.js";
+import { afterAll, describe, expect, test } from "bun:test";
+import { $ } from "bun";
+import { join as joinPath } from "node:path";
+import { join, split } from "../src/cli.js";
 
-const temporaryDirectories = [];
+const fixtures = joinPath(import.meta.dir, "../fixtures");
+const temporary = joinPath(import.meta.dir, "../.test-output");
 
-afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+afterAll(async () => {
+  await $`rm -rf ${temporary}`.quiet();
 });
 
-describe("CLI", () => {
-  test("splits and joins a SQL dump", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pg-leaf-test-"));
-    temporaryDirectories.push(directory);
-    const dump = join(directory, "dump.sql");
-    const snapshot = join(directory, "snapshot");
-    const restored = join(directory, "restored.sql");
-    await writeFile(dump, "CREATE TABLE public.items (id integer PRIMARY KEY);\nINSERT INTO public.items (id) VALUES (12);\n");
+const tree = async (root) => {
+  const paths = [...new Bun.Glob("**/*.sql").scanSync(root)].sort();
+  return Promise.all(paths.map(async (path) => [path, await Bun.file(`${root}/${path}`).text()]));
+};
 
-    await main(["split", dump, "--output", snapshot]);
-    await main(["join", snapshot, "--output", restored]);
+const joined = async (snapshot) => {
+  let text = "";
+  for await (const part of join(snapshot)) text += part;
+  return text;
+};
 
-    const sql = await readFile(restored, "utf8");
-    expect(sql).toContain("CREATE TABLE public.items");
-    expect(sql).toContain("INSERT INTO public.items (id) VALUES (12);");
+describe("fixtures mirror each other", () => {
+  test("split of fixtures/dump.sql reproduces fixtures/snapshot byte for byte", async () => {
+    await split(`${fixtures}/dump.sql`, `${temporary}/snapshot`);
+    expect(await tree(`${temporary}/snapshot`)).toEqual(await tree(`${fixtures}/snapshot`));
   });
 
-  test("leaves an existing snapshot untouched when splitting fails", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pg-leaf-test-"));
-    temporaryDirectories.push(directory);
-    const dump = join(directory, "dump.sql");
-    const snapshot = join(directory, "snapshot");
-    await writeFile(dump, "INSERT INTO t (id) VALUES (1), (2);");
-    await main(["split", dump, "--output", snapshot]).catch(() => {});
-    await writeFile(dump, "CREATE TABLE public.items (id integer PRIMARY KEY);");
-    await main(["split", dump, "--output", snapshot]);
-    await writeFile(dump, "INSERT INTO t (id) VALUES (1), (2);");
+  test("join of fixtures/snapshot reproduces fixtures/dump.sql byte for byte", async () => {
+    expect(await joined(`${fixtures}/snapshot`)).toBe(await Bun.file(`${fixtures}/dump.sql`).text());
+  });
 
-    await expect(main(["split", dump, "--output", snapshot])).rejects.toThrow();
-    expect(await readFile(join(snapshot, "00-pre.sql"), "utf8")).toContain("CREATE TABLE public.items");
+  test("split and join form a fixed point", async () => {
+    await Bun.write(`${temporary}/restored.sql`, await joined(`${fixtures}/snapshot`));
+    await split(`${temporary}/restored.sql`, `${temporary}/roundtrip`);
+    expect(await tree(`${temporary}/roundtrip`)).toEqual(await tree(`${fixtures}/snapshot`));
+  });
+});
+
+describe("split", () => {
+  test("keeps the previous snapshot when the dump cannot be split", async () => {
+    await Bun.write(`${temporary}/ok.sql`, "CREATE TABLE public.items (id integer PRIMARY KEY);\nINSERT INTO public.items (id) VALUES (1);\n");
+    await Bun.write(`${temporary}/bad.sql`, "INSERT INTO t (id) VALUES (1), (2);\n");
+    await split(`${temporary}/ok.sql`, `${temporary}/kept`);
+    await expect(split(`${temporary}/bad.sql`, `${temporary}/kept`)).rejects.toThrow();
+    expect(await Bun.file(`${temporary}/kept/begin.sql`).text()).toContain("CREATE TABLE");
   });
 });

@@ -57,3 +57,20 @@ test("split clears a stale output directory", async () => {
 test("CLI prints usage and exits non-zero without arguments", async () => {
     expect(await run()).toBe(1);
 });
+
+test("chunk names stay stable when non-key columns change", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    try {
+        const modified = (await Bun.file(fixture).text())
+            .replace("'Alice', 'alice@example.com'", "'Alicia', 'alicia@example.com'");
+        await Bun.write(`${dir}/modified.sql`, modified);
+        await run("split", fixture, `${dir}/before`);
+        await run("split", `${dir}/modified.sql`, `${dir}/after`);
+        expect((await readdir(`${dir}/after/2/public/users`)).sort())
+            .toEqual((await readdir(`${dir}/before/2/public/users`)).sort());
+        expect((await readdir(`${dir}/after/2/public/logs`)).sort())
+            .toEqual((await readdir(`${dir}/before/2/public/logs`)).sort());
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});

@@ -2,7 +2,7 @@
 // pg-leaf — reversible splitting of PostgreSQL dumps into Git-friendly files
 
 import {appendFile, mkdir, readdir, rm} from "node:fs/promises";
-import {split, statements} from "./sql.js";
+import {columns, lines, split, statements, uniques, values} from "./sql.js";
 
 const usage = `Usage:
   pg-leaf split <dump.sql> <output-dir>
@@ -12,13 +12,22 @@ const safe = name => name.replaceAll(/[^\w.-]/g, "_");
 
 const sha256 = text => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
-const writeTable = async (dir, lines) => {
+// hash key column values when the table has a unique key and the row parses cleanly,
+// so chunk names stay stable while non-key columns change; otherwise hash the whole INSERT
+const identity = (text, cols, key) => {
+    const row = values(text);
+    return key && row.length === cols?.length
+        ? key.map(column => row[cols.indexOf(column)]).join(", ")
+        : text;
+};
+
+const writeTable = async (dir, lines, cols, key) => {
     await mkdir(dir, {recursive: true});
     const used = new Set();
     for (const {kind, text} of statements(lines)) {
         switch (kind) {
             case "insert": {
-                const hash = sha256(text);
+                const hash = sha256(identity(text, cols, key));
                 let file = `${hash}.sql`;
                 for (let n = 2; used.has(file); n++) file = `${hash}.${n}.sql`;
                 used.add(file);
@@ -32,12 +41,13 @@ const writeTable = async (dir, lines) => {
 };
 
 const splitCommand = async (input, output) => {
-    const chunks = split(await Bun.file(input).text());
+    const sql = await Bun.file(input).text();
+    const [chunks, cols, keys] = [split(sql), columns(lines(sql)), uniques(lines(sql))];
     await rm(output, {recursive: true, force: true});
     // numbered chunks keep header → data → footer order under plain alphabetical sort
-    for (const {kind, schema, name, lines} of chunks)
-        if (kind === "table") await writeTable(`${output}/2/${safe(schema)}/${safe(name)}`, lines);
-        else await Bun.write(`${output}/${{header: 1, footer: 3}[kind]}.sql`, lines.join(""));
+    for (const {kind, schema, name, lines: chunk} of chunks)
+        if (kind === "table") await writeTable(`${output}/2/${safe(schema)}/${safe(name)}`, chunk, cols[`${schema}.${name}`], keys[`${schema}.${name}`]);
+        else await Bun.write(`${output}/${{header: 1, footer: 3}[kind]}.sql`, chunk.join(""));
 };
 
 const walk = async dir => {

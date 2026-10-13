@@ -1,5 +1,5 @@
 import {expect, test} from "bun:test";
-import {join, split, statements} from "../src/sql.js";
+import {columns, join, lines, split, statements, uniques, values} from "../src/sql.js";
 
 const dump = await Bun.file(new URL("../fixtures/dump.sql", import.meta.url)).text();
 
@@ -45,4 +45,23 @@ test("statements keeps multi-line INSERTs intact", () => {
         {kind: "insert", text: "INSERT INTO public.notes VALUES ('line one\nline two');\n"},
         {kind: "other", text: "\n"}
     ]);
+});
+
+test("columns extracts column order from CREATE TABLE statements", () => {
+    const tables = columns(lines(dump));
+    expect(tables["public.users"]).toEqual(["id", "name", "email"]);
+    expect(tables["public.logs"]).toEqual(["message"]);
+});
+
+test("uniques prefers a primary key over UNIQUE constraints", () => {
+    const keys = uniques(lines(dump));
+    expect(keys["public.users"]).toEqual(["id"]);
+    expect(keys["public.orders"]).toEqual(["id"]);
+    expect(keys["public.logs"]).toBeUndefined();
+});
+
+test("values splits a positional INSERT at top-level separators only", () => {
+    expect(values("INSERT INTO public.users VALUES (1, 'O''Hara, Jr.', NULL);\n"))
+        .toEqual(["1", "'O''Hara, Jr.'", "NULL"]);
+    expect(values("INSERT INTO public.notes VALUES ('a\nb', 2);")).toEqual(["'a\nb'", "2"]);
 });

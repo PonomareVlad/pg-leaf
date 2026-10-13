@@ -17,7 +17,7 @@ const TOKEN = new RegExp(
     /"(?:[^"]|"")*"/, // идентификатор в кавычках
     /[eE]'(?:[^'\\]|''|\\[\s\S])*'/, // строка с escape-последовательностями
     /'(?:[^']|'')*'/, // обычная строка
-    /(\$[A-Za-z_]*\$)[\s\S]*?\1/, // долларовая строка
+    /(\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)[\s\S]*?\1/, // долларовая строка
     /[A-Za-z_][A-Za-z0-9_$]*/, // слово
     /[0-9][0-9A-Za-z_.+-]*/, // число
     /[\s\S]/, // одиночный символ
@@ -31,7 +31,7 @@ const TOKEN = new RegExp(
 function classify(text) {
   if (/^(\s|--|\/\*)/.test(text)) return null;
   if (text.startsWith('"')) return "identifier";
-  if (/^([eE]?'|\$[A-Za-z_]*\$)/.test(text)) return "literal";
+  if (/^([eE]?'|\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)/.test(text)) return "literal";
   if (/^[A-Za-z_]/.test(text)) return "word";
   if (/^[0-9]/.test(text)) return "number";
   return "symbol";

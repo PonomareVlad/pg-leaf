@@ -12,6 +12,18 @@ describe("parse", () => {
     expect(parsed.map(({ tokens }) => tokens.at(-2).value)).toEqual(["'a;b'", "$$c;d$$", "E'e;\\';f'"]);
   });
 
+  test("recognizes dollar-quote tags containing digits", async () => {
+    const sql = "DO $body1$ BEGIN; INSERT INTO t VALUES (1); END; $body1$;";
+    const parsed = await parse(sql);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].text).toBe(sql);
+    expect(parsed[0].tokens.find(({ value }) => value.startsWith("$body1$"))).toMatchObject({
+      value: "$body1$ BEGIN; INSERT INTO t VALUES (1); END; $body1$",
+      type: "literal",
+    });
+  });
+
   test("keeps COPY FROM stdin data intact", async () => {
     const copy = "COPY public.items (id) FROM stdin;\n1\tvalue; ' -- text\n\\.\n";
     expect((await parse(copy))[0].text).toBe(copy);

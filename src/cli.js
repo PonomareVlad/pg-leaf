@@ -11,7 +11,7 @@ const usage = `Usage:
 
 // injective percent-encoding: `%` and every non-[\w-] byte become fixed-width `%XX`,
 // so distinct names never collide and encoded paths cannot form `.` or `..`
-const safe = name => name.replaceAll(/[^\w-]/g, char =>
+const safe = name => name.replaceAll(/[^\w-]/gu, char =>
     Array.from(new TextEncoder().encode(char), byte => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join(""));
 
 const sha256 = text => new Bun.CryptoHasher("sha256").update(text).digest("hex");

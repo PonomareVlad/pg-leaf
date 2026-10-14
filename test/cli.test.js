@@ -97,10 +97,16 @@ test("table names with unsupported characters are percent-encoded without collis
     try {
         const modified = (await Bun.file(fixture).text())
             .replaceAll("public.logs", 'public."lo/gs"')
-            .replaceAll("Name: logs;", "Name: lo/gs;");
+            .replaceAll("Name: logs;", "Name: lo/gs;")
+            .replaceAll("public.orders", 'public."😀"')
+            .replaceAll("Name: orders;", "Name: 😀;")
+            .replaceAll("public.products", 'public."😁"')
+            .replaceAll("Name: products;", "Name: 😁;");
         await Bun.write(`${dir}/modified.sql`, modified);
         await run("split", `${dir}/modified.sql`, `${dir}/output`);
-        expect((await readdir(`${dir}/output/2/public`)).sort()).toEqual(["lo%2Fgs", "orders", "products", "users"]);
+        // distinct astral names encode to distinct directories (no surrogate-collapse collisions)
+        expect((await readdir(`${dir}/output/2/public`)).sort())
+            .toEqual(["%F0%9F%98%80", "%F0%9F%98%81", "lo%2Fgs", "users"]);
     } finally {
         await rm(dir, {recursive: true, force: true});
     }

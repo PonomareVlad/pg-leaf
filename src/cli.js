@@ -14,7 +14,10 @@ const verbose = Bun.argv.includes("-v");
 // by default only table (directory) transitions are logged; -v adds per-file logs
 const log = text => verbose && console.log(text);
 
-const safe = name => name.replaceAll(/[^\w.-]/g, "_");
+// injective percent-encoding: `%` and every non-[\w-] byte become fixed-width `%XX`,
+// so distinct names never collide and encoded paths cannot form `.` or `..`
+const safe = name => name.replaceAll(/[^\w-]/gu, char =>
+    Array.from(new TextEncoder().encode(char), byte => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join(""));
 
 const sha256 = text => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
@@ -22,8 +25,9 @@ const sha256 = text => new Bun.CryptoHasher("sha256").update(text).digest("hex")
 // so chunk names stay stable while non-key columns change; otherwise hash the whole INSERT
 const identity = (text, cols, key) => {
     const row = values(text);
-    return key && row.length === cols?.length
-        ? key.map(column => row[cols.indexOf(column)]).join(", ")
+    const indexes = key?.map(column => cols?.indexOf(column) ?? -1);
+    return indexes?.every(index => index >= 0) && row.length === cols.length
+        ? indexes.map(index => row[index]).join(", ")
         : text;
 };
 

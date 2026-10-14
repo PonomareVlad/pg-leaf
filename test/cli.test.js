@@ -91,3 +91,39 @@ test("chunk names stay stable when non-key columns change", async () => {
         await rm(dir, {recursive: true, force: true});
     }
 });
+
+test("table names with unsupported characters are percent-encoded without collisions", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    try {
+        const modified = (await Bun.file(fixture).text())
+            .replaceAll("public.logs", 'public."lo/gs"')
+            .replaceAll("Name: logs;", "Name: lo/gs;")
+            .replaceAll("public.orders", 'public."😀"')
+            .replaceAll("Name: orders;", "Name: 😀;")
+            .replaceAll("public.products", 'public."😁"')
+            .replaceAll("Name: products;", "Name: 😁;");
+        await Bun.write(`${dir}/modified.sql`, modified);
+        await run("split", `${dir}/modified.sql`, `${dir}/output`);
+        // distinct astral names encode to distinct directories (no surrogate-collapse collisions)
+        expect((await readdir(`${dir}/output/2/public`)).sort())
+            .toEqual(["%F0%9F%98%80", "%F0%9F%98%81", "lo%2Fgs", "users"]);
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});
+
+test("rows fall back to full-INSERT hashes when a key column cannot be mapped", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    try {
+        const modified = (await Bun.file(fixture).text())
+            .replace("ADD CONSTRAINT users_pkey PRIMARY KEY (id);", "ADD CONSTRAINT users_pkey PRIMARY KEY (missing);");
+        await Bun.write(`${dir}/modified.sql`, modified);
+        await run("split", `${dir}/modified.sql`, `${dir}/output`);
+        const users = (await readdir(`${dir}/output/2/public/users`)).sort();
+        // every row keeps a distinct full-text hash instead of sharing one omitted-key identity
+        expect(users.filter(file => /^[0-9a-f]{64}\.sql$/.test(file))).toHaveLength(3);
+        expect(users.filter(file => /\.\d+\.sql$/.test(file))).toHaveLength(0);
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});

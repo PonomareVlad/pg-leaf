@@ -22,6 +22,12 @@ const identity = (text, cols, key) => {
         : text;
 };
 
+// log each file as it is written so long runs visibly make progress
+const write = async (path, text) => {
+    console.log(`write ${path}`);
+    await Bun.write(path, text);
+};
+
 const writeTable = async (dir, lines, cols, key) => {
     await mkdir(dir, {recursive: true});
     const used = new Set();
@@ -33,10 +39,11 @@ const writeTable = async (dir, lines, cols, key) => {
                 let file = `${hash}.sql`;
                 for (let n = 2; used.has(file); n++) file = `${hash}.${n}.sql`;
                 used.add(file);
-                await Bun.write(`${dir}/${file}`, format(text, {language: "postgresql"}) + "\n");
+                await write(`${dir}/${file}`, format(text, {language: "postgresql"}) + "\n");
                 break;
             }
             default:
+                if (!used.has("0.sql")) used.add("0.sql"), console.log(`write ${dir}/0.sql`);
                 await appendFile(`${dir}/0.sql`, text);
         }
     }
@@ -49,7 +56,7 @@ const splitCommand = async (input, output) => {
     // numbered chunks keep header → data → footer order under plain alphabetical sort
     for (const {kind, schema, name, lines: chunk} of chunks)
         if (kind === "table") await writeTable(`${output}/2/${safe(schema)}/${safe(name)}`, chunk, cols[`${schema}.${name}`], keys[`${schema}.${name}`]);
-        else await Bun.write(`${output}/${{header: 1, footer: 3}[kind]}.sql`, chunk.join(""));
+        else await write(`${output}/${{header: 1, footer: 3}[kind]}.sql`, chunk.join(""));
 };
 
 const walk = async dir => {
@@ -58,6 +65,7 @@ const walk = async dir => {
     for (const entry of (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name < b.name ? -1 : 1))
         if (entry.isDirectory()) parts.push(...await walk(`${dir}/${entry.name}`));
         else {
+            console.log(`read ${dir}/${entry.name}`);
             const text = await Bun.file(`${dir}/${entry.name}`).text();
             // reverse the split-time formatting of INSERT chunks back to single-line statements
             parts.push(text.startsWith("INSERT ") ? unformat(text) + "\n" : text);
@@ -65,7 +73,7 @@ const walk = async dir => {
     return parts;
 };
 
-const joinCommand = async (input, output) => Bun.write(output, (await walk(input)).join(""));
+const joinCommand = async (input, output) => write(output, (await walk(input)).join(""));
 
 const [command, input, output] = Bun.argv.slice(2);
 

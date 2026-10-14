@@ -6,8 +6,13 @@ import {format} from "sql-formatter";
 import {columns, lines, split, statements, unformat, uniques, values} from "./sql.js";
 
 const usage = `Usage:
-  pg-leaf split <dump.sql> <output-dir>
-  pg-leaf join <output-dir> <dump.sql>`;
+  pg-leaf split <dump.sql> <output-dir> [-v]
+  pg-leaf join <output-dir> <dump.sql> [-v]`;
+
+const verbose = Bun.argv.includes("-v");
+
+// by default only table (directory) transitions are logged; -v adds per-file logs
+const log = text => verbose && console.log(text);
 
 const safe = name => name.replaceAll(/[^\w.-]/g, "_");
 
@@ -22,13 +27,13 @@ const identity = (text, cols, key) => {
         : text;
 };
 
-// log each file as it is written so long runs visibly make progress
 const write = async (path, text) => {
-    console.log(`write ${path}`);
+    log(`write ${path}`);
     await Bun.write(path, text);
 };
 
 const writeTable = async (dir, lines, cols, key) => {
+    console.log(`table ${dir}`);
     await mkdir(dir, {recursive: true});
     const used = new Set();
     for (const {kind, text} of statements(lines)) {
@@ -43,7 +48,7 @@ const writeTable = async (dir, lines, cols, key) => {
                 break;
             }
             default:
-                if (!used.has("0.sql")) used.add("0.sql"), console.log(`write ${dir}/0.sql`);
+                if (!used.has("0.sql")) used.add("0.sql"), log(`write ${dir}/0.sql`);
                 await appendFile(`${dir}/0.sql`, text);
         }
     }
@@ -61,11 +66,14 @@ const splitCommand = async (input, output) => {
 
 const walk = async dir => {
     const parts = [];
+    const entries = (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name < b.name ? -1 : 1);
+    // directories holding files are table (or header/footer) transitions worth reporting
+    if (entries.some(entry => !entry.isDirectory())) console.log(`table ${dir}`);
     // `0.sql` sorts before hash-named chunks so each table starts with its comment block
-    for (const entry of (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name < b.name ? -1 : 1))
+    for (const entry of entries)
         if (entry.isDirectory()) parts.push(...await walk(`${dir}/${entry.name}`));
         else {
-            console.log(`read ${dir}/${entry.name}`);
+            log(`read ${dir}/${entry.name}`);
             const text = await Bun.file(`${dir}/${entry.name}`).text();
             // reverse the split-time formatting of INSERT chunks back to single-line statements
             parts.push(text.startsWith("INSERT ") ? unformat(text) + "\n" : text);
@@ -75,7 +83,7 @@ const walk = async dir => {
 
 const joinCommand = async (input, output) => write(output, (await walk(input)).join(""));
 
-const [command, input, output] = Bun.argv.slice(2);
+const [command, input, output] = Bun.argv.slice(2).filter(arg => arg !== "-v");
 
 switch (true) {
     case command === "split" && Boolean(input && output):

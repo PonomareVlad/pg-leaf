@@ -9,6 +9,26 @@ const run = (...args) => Bun.spawn(["bun", cli, ...args]).exited;
 
 const sorted = sql => sql.split("\n").sort();
 
+test("join preserves alphabetical order across many nested chunks", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
+    const count = 2048;
+    try {
+        await Bun.write(`${dir}/output/3.sql`, "-- footer\n");
+        for (let i = count - 1; i >= 0; i--)
+            await Bun.write(`${dir}/output/2/public/users/${String(i).padStart(4, "0")}.sql`, `-- chunk ${i}\n`);
+        await Bun.write(`${dir}/output/2/public/z/0.sql`, "-- last table\n");
+        await Bun.write(`${dir}/output/1.sql`, "-- header\n");
+
+        expect(await run("join", `${dir}/output`, `${dir}/restored.sql`)).toBe(0);
+        const expected = "-- header\n"
+            + Array.from({length: count}, (_, i) => `-- chunk ${i}\n`).join("")
+            + "-- last table\n-- footer\n";
+        expect(await Bun.file(`${dir}/restored.sql`).text()).toBe(expected);
+    } finally {
+        await rm(dir, {recursive: true, force: true});
+    }
+});
+
 test("split writes one hash-named chunk per INSERT plus 0.sql for the rest", async () => {
     const dir = await mkdtemp(`${tmpdir()}/pg-leaf-`);
     try {

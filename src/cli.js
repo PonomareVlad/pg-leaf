@@ -68,14 +68,13 @@ const splitCommand = async (input, output) => {
         else await write(`${output}/${{header: 1, footer: 3}[kind]}.sql`, chunk.join(""));
 };
 
-const walk = async dir => {
-    const parts = [];
+const walk = async (dir, parts = []) => {
     const entries = (await readdir(dir, {withFileTypes: true})).sort((a, b) => a.name < b.name ? -1 : 1);
     // directories holding files are table (or header/footer) transitions worth reporting
     if (entries.some(entry => !entry.isDirectory())) console.log(`table ${dir}`);
     // `0.sql` sorts before hash-named chunks so each table starts with its comment block
     for (const entry of entries)
-        if (entry.isDirectory()) parts.push(...await walk(`${dir}/${entry.name}`));
+        if (entry.isDirectory()) await walk(`${dir}/${entry.name}`, parts);
         else {
             log(`read ${dir}/${entry.name}`);
             const text = await Bun.file(`${dir}/${entry.name}`).text();

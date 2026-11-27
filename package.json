@@ -1,0 +1,16 @@
+{
+  "name": "pg-leaf",
+  "version": "0.1.0",
+  "description": "Reversible splitting of PostgreSQL dumps into Git-friendly files",
+  "type": "module",
+  "bin": {
+    "pg-leaf": "src/cli.js"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "sql-formatter": "^15.9.0"
+  }
+}
